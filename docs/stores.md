@@ -25,11 +25,16 @@ runtime.
 
 ## Preparing a write
 
-The caller owns the write's lifetime and supplies plain state:
+`init()` in `src/init.mjs` constructs the plain transaction object: fresh value
+stores, their counter forks, an empty output array and an empty rollback journal.
+`init(stores)` instead uses caller-supplied store instances, retaining their
+persisted mappings and committed counters between transactions. The caller owns
+the transaction's lifetime:
 
 ```js
 import { Record, Tuple } from 'odbx';
 import { createStringStore, createTupleStore, createRecordStore, getKey, rollback } from '../src/stores.mjs';
+import { init } from '../src/init.mjs';
 
 const stores = {
   stringStore: createStringStore(),
@@ -37,12 +42,7 @@ const stores = {
   recordStore: createRecordStore(),
 };
 
-const write = {
-  ...stores,
-  counters: new Map(Object.values(stores).map(store => [store, store.counter.fork()])),
-  output: [],
-  created: [],
-};
+const write = init(stores);
 
 try {
   const root = getKey(write, Record({ tags: Tuple('Oddo') }));

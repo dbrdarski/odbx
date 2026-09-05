@@ -3,6 +3,7 @@ import test from 'node:test';
 import { Record, Tuple } from 'odbx';
 import { encodeFloat, encodeString } from '../src/codec.mjs';
 import { parse } from '../src/parser.mjs';
+import { init as prepare } from '../src/init.mjs';
 import { stringReference, tupleReference, recordReference } from '../src/symbols.mjs';
 import { createStore, createStringStore, createTupleStore, createRecordStore, getKey, rollback } from '../src/stores.mjs';
 
@@ -12,13 +13,6 @@ const createStores = () => ({
   recordStore: createRecordStore(),
 });
 
-// The later serialized save path owns the counter forks, output and journal.
-const prepare = stores => ({
-  ...stores,
-  counters: new Map(Object.values(stores).map(store => [store, store.counter.fork()])),
-  output: [],
-  created: [],
-});
 const publish = write => {
   for (const [store, counter] of write.counters) store.counter = counter;
 };
@@ -97,11 +91,10 @@ test('store factories can resume restored counters and value mappings', () => {
 });
 
 test('String, Tuple and Record counters are independent and change only in their forks', () => {
-  const stores = createStores();
-  const write = prepare(stores);
+  const write = prepare();
   const keys = [getKey(write, ''), getKey(write, Tuple()), getKey(write, Record())];
   assert.deepEqual(keys.map(key => [key.type, key.id]), [['S', 0n], ['A', 0n], ['O', 0n]]);
-  assert.deepEqual(counters(stores), [0n, 0n, 0n]);
+  assert.deepEqual(counters(write), [0n, 0n, 0n]);
   assert.deepEqual(pendingCounters(write), [1n, 1n, 1n]);
   assert.deepEqual(write.output, ['""', '[]', '{A\u0100A\u0100}']);
 });
