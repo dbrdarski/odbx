@@ -7,24 +7,22 @@ const createCounter = value => ({
   getId: () => value++,
 });
 
-export function createStore({ reference, serialize }) {
-  return (counter = 0n, keys = new Map()) => {
-    const store = {
-      counter: createCounter(counter),
-      getKey(write, value) {
-        const existing = keys.get(value);
-        if (existing != null) return existing;
-        // Serialization discovers children before allocating the parent ID.
-        const definition = serialize(write, value);
-        const key = reference(write.counters.get(store).getId());
-        keys.set(value, key);
-        write.created.push([keys, value]);
-        write.output.push(definition);
-        return key;
-      },
-    };
-    return store;
+export function createStore({ reference, serialize }, counter = 0n, keys = new Map()) {
+  const store = {
+    counter: createCounter(counter),
+    getKey(write, value) {
+      const existing = keys.get(value);
+      if (existing != null) return existing;
+      // Serialization discovers children before allocating the parent ID.
+      const definition = serialize(write, value);
+      const key = reference(write.counters.get(store).getId());
+      keys.set(value, key);
+      write.created.push([keys, value]);
+      write.output.push(definition);
+      return key;
+    },
   };
+  return store;
 }
 
 export function createStores() {
@@ -34,15 +32,15 @@ export function createStores() {
     if (value instanceof Record) return recordStore.getKey(write, value);
     return encodePrimitive(value);
   };
-  const stringStore = createStore({ reference: stringReference, serialize: (_, value) => encodeString(value) })();
+  const stringStore = createStore({ reference: stringReference, serialize: (_, value) => encodeString(value) });
   const tupleStore = createStore({
     reference: tupleReference,
     serialize: (write, value) => `[${Array.from(value, child => getKey(write, child)).join('')}]`,
-  })();
+  });
   const recordStore = createStore({
     reference: recordReference,
     serialize: (write, value) => `{${getKey(write, Tuple(...Object.keys(value)))}${getKey(write, Tuple(...Object.values(value)))}}`,
-  })();
+  });
   const createDocumentStore = type => createStore({
     reference: documentReference(type),
     serialize: (write, document) => `<${getKey(write, document.type)}>`,
