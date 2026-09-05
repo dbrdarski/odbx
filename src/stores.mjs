@@ -15,10 +15,9 @@ export function createStore({ reference, serialize }, counter = 0n, keys = new M
       if (existing != null) return existing;
       // Serialization discovers children before allocating the parent ID.
       const definition = serialize(write, value);
-      const key = reference(write.counters.get(store).getId());
+      const key = reference(store.counter.getId());
       keys.set(value, key);
-      write.created.push([keys, value]);
-      write.output.push(definition);
+      write(definition);
       return key;
     },
   };
@@ -32,7 +31,10 @@ export function createStores() {
     if (value instanceof Record) return recordStore.getKey(write, value);
     return encodePrimitive(value);
   };
-  const stringStore = createStore({ reference: stringReference, serialize: (_, value) => encodeString(value) });
+  const stringStore = createStore({
+    reference: stringReference,
+    serialize: (_, value) => encodeString(value)
+  });
   const tupleStore = createStore({
     reference: tupleReference,
     serialize: (write, value) => `[${Array.from(value, child => getKey(write, child)).join('')}]`,
@@ -51,12 +53,4 @@ export function createStores() {
       `(${documentReference(type)(documentId)}${getKey(write, metadata)}${getKey(write, data)}${encodePrimitive(archived)})`,
   });
   return { stringStore, tupleStore, recordStore, createDocumentStore, createRevisionStore, getKey };
-}
-
-export function rollback(created) {
-  for (let i = created.length - 1; i >= 0; i--) {
-    const [keys, value] = created[i];
-    keys.delete(value);
-  }
-  created.length = 0;
 }
