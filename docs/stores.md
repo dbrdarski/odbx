@@ -12,14 +12,16 @@ const createStringStore = createStore({
 
 The Tuple and Record factories supply their own serializers in the same way.
 Each instance retains one Map from canonical value to typed persistent reference,
-and its own bigint counter. A Map hit returns the reference immediately. On a
-miss, serialization discovers children first, then the store allocates its ID,
-journals the new mapping and appends its definition to the shared output.
+and its own counter object containing a bigint `value`. A Map hit returns the
+reference immediately. On a miss, serialization discovers children first, then
+the store allocates its ID, journals the new mapping and appends its definition
+to the shared output.
 
 Tuple serialization uses `Array.from` to produce an ordinary temporary Array.
 Record serialization uses canonical `Tuple(...Object.keys(value))` and
 `Tuple(...Object.values(value))`, preserving their corresponding enumeration order.
-All consumers use the unchanged Oddo runtime.
+Discovery consumes the acyclic canonical values provided by the unchanged Oddo
+runtime.
 
 ## Preparing a write
 
@@ -29,16 +31,15 @@ The caller owns the write's lifetime and supplies plain state:
 import { Record, Tuple } from 'odbx';
 import { createStringStore, createTupleStore, createRecordStore, getKey, rollback } from '../src/stores.mjs';
 
-let stores = {
+const stores = {
   stringStore: createStringStore(),
   tupleStore: createTupleStore(),
   recordStore: createRecordStore(),
 };
 
 const write = {
-  stringStore: stores.stringStore.fork(),
-  tupleStore: stores.tupleStore.fork(),
-  recordStore: stores.recordStore.fork(),
+  ...stores,
+  counters: new Map(Object.values(stores).map(store => [store, { ...store.counter }])),
   output: [],
   created: [],
 };
@@ -47,21 +48,19 @@ try {
   const root = getKey(write, Record({ tags: Tuple('Oddo') }));
   const bytes = Buffer.from(write.output.join(''), 'utf8');
   // This slice simulates success in memory. The eventual save path first adds
-  // Document/Revision entries and awaits the complete append before adopting:
-  stores = {
-    stringStore: write.stringStore,
-    tupleStore: write.tupleStore,
-    recordStore: write.recordStore,
-  };
+  // Document/Revision entries and awaits the complete append before publishing:
+  for (const [store, counter] of write.counters) store.counter = counter;
 } catch (error) {
   rollback(write.created);
-  throw error; // Discard this write, including its forks and output.
+  throw error; // Discard this write, including its counter forks and output.
 }
 ```
 
-`fork()` shares the Map and starts a fresh counter from the source counter. On
-success the caller adopts the forks; on failure it removes journaled mappings and
-discards the forks. Committed counters never advance during discovery. Store
+Every counter is copied before discovery. The write's `counters` Map associates
+each stable store instance with its counter fork. On success the caller replaces
+the committed counters with these forks; on failure it removes journaled mappings
+and discards the forks. Store instances, lookup functions and value Maps stay in
+place. Committed counters never advance during discovery. Store
 methods are internal preparation operations, not public reads: the later database
 save queue must serialize the entire prepare/append/publish-or-rollback lifetime.
 Discovery errors propagate to that caller, which owns rollback.

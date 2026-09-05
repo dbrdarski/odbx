@@ -3,31 +3,22 @@ import { stringReference, tupleReference, recordReference } from './symbols.mjs'
 import { Record, Tuple } from './values.mjs';
 
 export function createStore({ reference, serialize }) {
-  return function store(counter = 0n, keys = new Map()) {
-    const visiting = new Set();
-
-    return {
-      get counter() { return counter; },
-      fork: () => store(counter, keys),
+  return (counter = 0n, keys = new Map()) => {
+    const store = {
+      counter: { value: counter },
       getKey(write, value) {
         const existing = keys.get(value);
         if (existing !== undefined) return existing;
-        if (visiting.has(value)) throw new TypeError('Structural cycles cannot be persisted');
-
-        visiting.add(value);
-        try {
-          // Serialization discovers children before allocating the parent ID.
-          const definition = serialize(write, value);
-          const key = reference(counter++);
-          keys.set(value, key);
-          write.created.push([keys, value]);
-          write.output.push(definition);
-          return key;
-        } finally {
-          visiting.delete(value);
-        }
+        // Serialization discovers children before allocating the parent ID.
+        const definition = serialize(write, value);
+        const key = reference(write.counters.get(store).value++);
+        keys.set(value, key);
+        write.created.push([keys, value]);
+        write.output.push(definition);
+        return key;
       },
     };
+    return store;
   };
 }
 
