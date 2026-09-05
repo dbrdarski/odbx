@@ -12,10 +12,10 @@ const createStringStore = createStore({
 
 The Tuple and Record factories supply their own serializers in the same way.
 Each instance retains one Map from canonical value to typed persistent reference,
-and its own counter object containing a bigint `value`. A Map hit returns the
-reference immediately. On a miss, serialization discovers children first, then
-the store allocates its ID, journals the new mapping and appends its definition
-to the shared output.
+and its own counter with two functions: `fork()` and `getId()`. The bigint state
+is private. A Map hit returns the reference immediately. On a miss, serialization
+discovers children first, then the store calls the counter fork's `getId()`,
+journals the new mapping and appends its definition to the shared output.
 
 Tuple serialization uses `Array.from` to produce an ordinary temporary Array.
 Record serialization uses canonical `Tuple(...Object.keys(value))` and
@@ -57,11 +57,12 @@ try {
 ```
 
 Each `store.counter.fork()` creates a new counter initialized from that counter's
-current value. All counters are forked before discovery. The write's `counters`
-Map associates each stable store instance with its counter fork. On success the caller replaces
-the committed counters with these forks; on failure it removes journaled mappings
-and discards the forks. Store instances, lookup functions and value Maps stay in
-place. Committed counters never advance during discovery. Store
+current value. `getId()` returns the current ID and increments the counter
+internally. All counters are forked before discovery. The write's `counters`
+Map associates each stable store instance with its counter fork. On success the
+caller replaces the committed counters with these forks; on failure it removes
+journaled mappings and discards the forks. Store instances, lookup functions and
+value Maps stay in place. Committed counters never advance during discovery. Store
 methods are internal preparation operations, not public reads: the later database
 save queue must serialize the entire prepare/append/publish-or-rollback lifetime.
 Discovery errors propagate to that caller, which owns rollback.

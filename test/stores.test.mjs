@@ -22,8 +22,10 @@ const prepare = stores => ({
 const publish = write => {
   for (const [store, counter] of write.counters) store.counter = counter;
 };
-const counters = stores => [stores.stringStore.counter.value, stores.tupleStore.counter.value, stores.recordStore.counter.value];
-const pendingCounters = write => Array.from(write.counters.values(), counter => counter.value);
+// Observe allocation through a disposable fork without advancing the source.
+const nextId = counter => counter.fork().getId();
+const counters = stores => [stores.stringStore, stores.tupleStore, stores.recordStore].map(store => nextId(store.counter));
+const pendingCounters = write => Array.from(write.counters.values(), nextId);
 const payload = write => Buffer.from(write.output.join(''), 'utf8');
 
 // Test-only definition inspection, not transactional database replay.
@@ -64,8 +66,8 @@ test('createStore specializes reference construction and serialization once for 
   assert.deepEqual(write.output, ['ODDO']);
   assert.equal(serializations, 1);
   assert.equal(references, 1);
-  assert.equal(store.counter.value, 0n);
-  assert.equal(write.counters.get(store).value, 1n);
+  assert.equal(nextId(store.counter), 0n);
+  assert.equal(nextId(write.counters.get(store)), 1n);
   const independent = createUpperStore();
   assert.equal(independent.getKey(prepare({ independent }), 'different'), 'key:0');
   publish(write);
@@ -89,8 +91,8 @@ test('store factories can resume restored counters and value mappings', () => {
   const write = prepare({ store });
   assert.equal(store.getKey(write, 'known'), known);
   assert.equal(store.getKey(write, 'next').id, 8n);
-  assert.equal(store.counter.value, 8n);
-  assert.equal(write.counters.get(store).value, 9n);
+  assert.equal(nextId(store.counter), 8n);
+  assert.equal(nextId(write.counters.get(store)), 9n);
   assert.deepEqual(write.output, ['"next"']);
 });
 
@@ -238,7 +240,7 @@ test('only counters are forked and published while stores and lookup functions r
   getKey(first, Record({ first: Tuple('one') }));
   assert.deepEqual(counters(stores), [0n, 0n, 0n]);
   publish(first);
-  assert.deepEqual(originalCounters.map(counter => counter.value), [0n, 0n, 0n]);
+  assert.deepEqual(originalCounters.map(nextId), [0n, 0n, 0n]);
   for (const [i, store] of instances.entries()) {
     assert.equal(Object.values(stores)[i], store);
     assert.equal(store.getKey, lookups[i]);

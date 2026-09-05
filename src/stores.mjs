@@ -2,10 +2,10 @@ import { encodePrimitive, encodeString } from './codec.mjs';
 import { stringReference, tupleReference, recordReference } from './symbols.mjs';
 import { Record, Tuple } from './values.mjs';
 
-const createCounter = value => {
-  const counter = { value, fork: () => createCounter(counter.value) };
-  return counter;
-};
+const createCounter = value => ({
+  fork: () => createCounter(value),
+  getId: () => value++,
+});
 
 export function createStore({ reference, serialize }) {
   return (counter = 0n, keys = new Map()) => {
@@ -16,7 +16,7 @@ export function createStore({ reference, serialize }) {
         if (existing !== undefined) return existing;
         // Serialization discovers children before allocating the parent ID.
         const definition = serialize(write, value);
-        const key = reference(write.counters.get(store).value++);
+        const key = reference(write.counters.get(store).getId());
         keys.set(value, key);
         write.created.push([keys, value]);
         write.output.push(definition);
