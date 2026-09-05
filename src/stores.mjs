@@ -2,10 +2,15 @@ import { encodePrimitive, encodeString } from './codec.mjs';
 import { stringReference, tupleReference, recordReference } from './symbols.mjs';
 import { Record, Tuple } from './values.mjs';
 
+const createCounter = value => {
+  const counter = { value, fork: () => createCounter(counter.value) };
+  return counter;
+};
+
 export function createStore({ reference, serialize }) {
   return (counter = 0n, keys = new Map()) => {
     const store = {
-      counter: { value: counter },
+      counter: createCounter(counter),
       getKey(write, value) {
         const existing = keys.get(value);
         if (existing !== undefined) return existing;

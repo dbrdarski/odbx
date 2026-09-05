@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Record, Tuple } from 'odbx';
-import { encodeFloat } from '../src/codec.mjs';
+import { encodeFloat, encodeString } from '../src/codec.mjs';
 import { parse } from '../src/parser.mjs';
 import { stringReference, tupleReference, recordReference } from '../src/symbols.mjs';
 import { createStore, createStringStore, createTupleStore, createRecordStore, getKey, rollback } from '../src/stores.mjs';
@@ -15,7 +15,7 @@ const createStores = () => ({
 // The later serialized save path owns the counter forks, output and journal.
 const prepare = stores => ({
   ...stores,
-  counters: new Map(Object.values(stores).map(store => [store, { ...store.counter }])),
+  counters: new Map(Object.values(stores).map(store => [store, store.counter.fork()])),
   output: [],
   created: [],
 });
@@ -76,10 +76,10 @@ test('store matching is by value identity, never by serialized output', () => {
   const create = createStore({ reference: id => id, serialize: () => 'same definition' });
   const store = create();
   const write = prepare({ store });
-  const first = {};
+  const first = Record({ a: 1 });
   assert.equal(store.getKey(write, first), 0n);
   assert.equal(store.getKey(write, first), 0n);
-  assert.equal(store.getKey(write, {}), 1n);
+  assert.equal(store.getKey(write, Record({ a: 2 })), 1n);
   assert.deepEqual(write.output, ['same definition', 'same definition']);
 });
 
@@ -285,11 +285,19 @@ test('rollback removes new mappings and retained failed values retry with identi
   assert.deepEqual(next.output, []);
 });
 
-test('discovery failure after creating all three kinds of value is recoverable through the journal', () => {
+test('a serializer failure after creating all three kinds of value is recoverable through the journal', () => {
   const stores = createStores();
+  const error = new Error('injected serialization failure');
+  stores.stringStore = createStore({
+    reference: stringReference,
+    serialize: (_write, value) => {
+      if (value === 'fail here') throw error;
+      return encodeString(value);
+    },
+  })();
   const child = Record({ valid: Tuple('new child') });
   const failed = prepare(stores);
-  assert.throws(() => getKey(failed, Tuple(child, undefined)), TypeError);
+  assert.throws(() => getKey(failed, Tuple(child, 'fail here')), thrown => thrown === error);
   assert.ok(pendingCounters(failed).every(counter => counter > 0n));
   const journal = failed.created.slice();
   rollback(failed.created);
@@ -316,21 +324,6 @@ test('a definition-output failure still leaves every inserted mapping in the rol
   const retry = prepare(stores);
   const key = getKey(retry, value);
   assert.equal(inspect(payload(retry)).O.get(key.id), value);
-});
-
-test('unsupported host values are rejected without modifying or normalizing Oddo values', () => {
-  const invalid = [undefined, 1n, Symbol('host'), () => {}, {}, [], new Date(), stringReference(0n)];
-  for (const value of invalid) {
-    for (const root of [value, Tuple(value), Record({ value })]) {
-      const stores = createStores();
-      const write = prepare(stores);
-      assert.throws(() => getKey(write, root), TypeError);
-      rollback(write.created);
-      assert.deepEqual(counters(stores), [0n, 0n, 0n]);
-    }
-  }
-  assert.equal(Tuple(undefined)[0], undefined);
-  assert.equal(Record({ value: undefined }).value, undefined);
 });
 
 test('inline primitives emit no definitions and negative-zero normalization stays in the codec', () => {

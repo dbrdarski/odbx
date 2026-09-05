@@ -39,7 +39,7 @@ const stores = {
 
 const write = {
   ...stores,
-  counters: new Map(Object.values(stores).map(store => [store, { ...store.counter }])),
+  counters: new Map(Object.values(stores).map(store => [store, store.counter.fork()])),
   output: [],
   created: [],
 };
@@ -56,8 +56,9 @@ try {
 }
 ```
 
-Every counter is copied before discovery. The write's `counters` Map associates
-each stable store instance with its counter fork. On success the caller replaces
+Each `store.counter.fork()` creates a new counter initialized from that counter's
+current value. All counters are forked before discovery. The write's `counters`
+Map associates each stable store instance with its counter fork. On success the caller replaces
 the committed counters with these forks; on failure it removes journaled mappings
 and discards the forks. Store instances, lookup functions and value Maps stay in
 place. Committed counters never advance during discovery. Store
