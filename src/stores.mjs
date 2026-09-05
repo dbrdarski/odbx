@@ -27,42 +27,32 @@ export function createStore({ reference, serialize }) {
   };
 }
 
-export const createStringStore = createStore({
-  reference: stringReference,
-  serialize: (_, value) => encodeString(value),
-});
-
-export const createTupleStore = createStore({
-  reference: tupleReference,
-  // Use an ordinary Array; Oddo's inherited Array methods use its constructor.
-  serialize: (write, value) => `[${Array.from(value, child => getKey(write, child)).join('')}]`,
-});
-
-export const createRecordStore = createStore({
-  reference: recordReference,
-  serialize: (write, value) => {
-    const keys = getKey(write, Tuple(...Object.keys(value)));
-    const values = getKey(write, Tuple(...Object.values(value)));
-    return `{${keys}${values}}`;
-  },
-});
-
-export const createDocumentStore = type => createStore({
-  reference: documentReference(type),
-  serialize: (write, document) => `<${getKey(write, document.type)}>`,
-});
-
-export const createRevisionStore = type => documentId => createStore({
-  reference: revisionReference,
-  serialize: (write, { metadata, data, archived }) =>
-    `(${documentReference(type)(documentId)}${getKey(write, metadata)}${getKey(write, data)}${encodePrimitive(archived)})`,
-});
-
-export function getKey(write, value) {
-  if (typeof value === 'string') return write.stringStore.getKey(write, value);
-  if (value instanceof Tuple) return write.tupleStore.getKey(write, value);
-  if (value instanceof Record) return write.recordStore.getKey(write, value);
-  return encodePrimitive(value);
+export function createStores() {
+  const getKey = (write, value) => {
+    if (typeof value === 'string') return stringStore.getKey(write, value);
+    if (value instanceof Tuple) return tupleStore.getKey(write, value);
+    if (value instanceof Record) return recordStore.getKey(write, value);
+    return encodePrimitive(value);
+  };
+  const stringStore = createStore({ reference: stringReference, serialize: (_, value) => encodeString(value) })();
+  const tupleStore = createStore({
+    reference: tupleReference,
+    serialize: (write, value) => `[${Array.from(value, child => getKey(write, child)).join('')}]`,
+  })();
+  const recordStore = createStore({
+    reference: recordReference,
+    serialize: (write, value) => `{${getKey(write, Tuple(...Object.keys(value)))}${getKey(write, Tuple(...Object.values(value)))}}`,
+  })();
+  const createDocumentStore = type => createStore({
+    reference: documentReference(type),
+    serialize: (write, document) => `<${getKey(write, document.type)}>`,
+  });
+  const createRevisionStore = type => documentId => createStore({
+    reference: revisionReference,
+    serialize: (write, { metadata, data, archived }) =>
+      `(${documentReference(type)(documentId)}${getKey(write, metadata)}${getKey(write, data)}${encodePrimitive(archived)})`,
+  });
+  return { stringStore, tupleStore, recordStore, createDocumentStore, createRevisionStore, getKey };
 }
 
 export function rollback(created) {
