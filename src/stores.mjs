@@ -1,0 +1,67 @@
+import { encodePrimitive, encodeString } from './codec.mjs';
+import { stringReference, tupleReference, recordReference } from './symbols.mjs';
+import { Record, Tuple } from './values.mjs';
+
+export function createStore({ reference, serialize }) {
+  return function store(counter = 0n, keys = new Map()) {
+    const visiting = new Set();
+
+    return {
+      get counter() { return counter; },
+      fork: () => store(counter, keys),
+      getKey(write, value) {
+        const existing = keys.get(value);
+        if (existing !== undefined) return existing;
+        if (visiting.has(value)) throw new TypeError('Structural cycles cannot be persisted');
+
+        visiting.add(value);
+        try {
+          // Serialization discovers children before allocating the parent ID.
+          const definition = serialize(write, value);
+          const key = reference(counter++);
+          keys.set(value, key);
+          write.created.push([keys, value]);
+          write.output.push(definition);
+          return key;
+        } finally {
+          visiting.delete(value);
+        }
+      },
+    };
+  };
+}
+
+export const createStringStore = createStore({
+  reference: stringReference,
+  serialize: (_write, value) => encodeString(value),
+});
+
+export const createTupleStore = createStore({
+  reference: tupleReference,
+  // Use an ordinary Array; Oddo's inherited Array methods use its constructor.
+  serialize: (write, value) => `[${Array.from(value, child => getKey(write, child)).join('')}]`,
+});
+
+export const createRecordStore = createStore({
+  reference: recordReference,
+  serialize: (write, value) => {
+    const keys = getKey(write, Tuple(...Object.keys(value)));
+    const values = getKey(write, Tuple(...Object.values(value)));
+    return `{${keys}${values}}`;
+  },
+});
+
+export function getKey(write, value) {
+  if (typeof value === 'string') return write.stringStore.getKey(write, value);
+  if (value instanceof Tuple) return write.tupleStore.getKey(write, value);
+  if (value instanceof Record) return write.recordStore.getKey(write, value);
+  return encodePrimitive(value);
+}
+
+export function rollback(created) {
+  for (let i = created.length - 1; i >= 0; i--) {
+    const [keys, value] = created[i];
+    keys.delete(value);
+  }
+  created.length = 0;
+}

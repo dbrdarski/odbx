@@ -4,9 +4,10 @@ Append-only versioned content storage for Oddo canonical Records and Tuples.
 The **O** stands for **Oddo**. The implementation specification is
 [the MVP handover](odbx-mvp-development-handover.md).
 
-The implemented batches contain the compact codec, sequential parser, and local
-Oddo Record/Tuple runtime. Stores, the database API and file recovery are subsequent
-batches.
+The implemented batches contain the compact codec, sequential parser, local Oddo
+Record/Tuple runtime, and [value stores](docs/stores.md) with counter forks and
+mapping rollback. Document/Revision stores, the database API and file recovery
+are subsequent batches.
 
 Run the tests with Node.js 22 or later:
 
