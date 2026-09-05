@@ -1,336 +1,283 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { Record, Tuple } from 'odbx';
 import { encodeFloat, encodeString } from '../src/codec.mjs';
 import { parse } from '../src/parser.mjs';
-import { init as prepare } from '../src/init.mjs';
+import { init } from '../src/init.mjs';
+import { createWrite } from '../src/write.mjs';
+import { fileAdapter } from '../src/adapters/file.mjs';
 import { stringReference, tupleReference, recordReference } from '../src/symbols.mjs';
-import { createStore, createStringStore, createTupleStore, createRecordStore, getKey, rollback } from '../src/stores.mjs';
+import { createStore, createStringStore, getKey } from '../src/stores.mjs';
 
-const createStores = () => ({
-  stringStore: createStringStore(),
-  tupleStore: createTupleStore(),
-  recordStore: createRecordStore(),
-});
-
-const publish = write => {
-  for (const [store, counter] of write.counters) store.counter = counter;
-};
-// Observe allocation through a disposable fork without advancing the source.
-const nextId = counter => counter.fork().getId();
-const counters = stores => [stores.stringStore, stores.tupleStore, stores.recordStore].map(store => nextId(store.counter));
-const pendingCounters = write => Array.from(write.counters.values(), nextId);
-const payload = write => Buffer.from(write.output.join(''), 'utf8');
-
-// Test-only definition inspection, not transactional database replay.
-function inspect(bytes) {
-  const values = { S: new Map(), A: new Map(), O: new Map() };
-  const next = { S: 0n, A: 0n, O: 0n };
-  function resolve(value) {
-    if (value === null || typeof value !== 'object') return value;
-    const table = values[value.type];
-    assert.ok(table?.has(value.id), 'Every reference must follow its definition');
-    return table.get(value.id);
-  }
-  for (const entry of parse(bytes)) {
-    if (entry.type === 'string') values.S.set(next.S++, entry.value);
-    else if (entry.type === 'tuple') values.A.set(next.A++, Tuple(...entry.values.map(resolve)));
-    else if (entry.type === 'record') {
-      const keys = resolve(entry.keys);
-      const children = resolve(entry.values);
-      assert.equal(keys.length, children.length);
-      assert.ok(Array.from(keys).every(key => typeof key === 'string'));
-      values.O.set(next.O++, Record(Object.fromEntries(Array.from(keys, (key, i) => [key, children[i]]))));
-    } else assert.fail(`Unexpected ${entry.type} definition`);
-  }
-  return values;
+// Filesystem fixture only; store construction and the write lifecycle are in src.
+async function temporaryFile(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'odbx-stores-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return join(directory, 'values.odbx');
 }
 
-test('createStore specializes reference construction and serialization once for independent stores', () => {
+test('createStore specializes reference construction and serialization for independent stores', async t => {
+  const filename = await temporaryFile(t);
   let serializations = 0;
   let references = 0;
   const createUpperStore = createStore({
     reference: id => { references++; return `key:${id}`; },
-    serialize: (_write, value) => { serializations++; return value.toUpperCase(); },
+    serialize: (_, value) => { serializations++; return value.toUpperCase(); },
   });
   const store = createUpperStore();
-  const write = prepare({ store });
-  assert.equal(store.getKey(write, 'Oddo'), 'key:0');
-  assert.equal(store.getKey(write, 'Oddo'), 'key:0');
-  assert.deepEqual(write.output, ['ODDO']);
+  const write = createWrite({ store }, fileAdapter(filename), store.getKey);
+  assert.equal(await write('Oddo'), 'key:0');
+  assert.equal(await write('Oddo'), 'key:0');
   assert.equal(serializations, 1);
   assert.equal(references, 1);
-  assert.equal(nextId(store.counter), 0n);
-  assert.equal(nextId(write.counters.get(store)), 1n);
+  assert.equal(await write('next'), 'key:1');
+  assert.equal(await readFile(filename, 'utf8'), 'ODDONEXT');
   const independent = createUpperStore();
-  assert.equal(independent.getKey(prepare({ independent }), 'different'), 'key:0');
-  publish(write);
-  assert.equal(store.getKey(prepare({ store }), 'next'), 'key:1');
+  const other = createWrite({ independent }, fileAdapter(await temporaryFile(t)), independent.getKey);
+  assert.equal(await other('different'), 'key:0');
 });
 
-test('store matching is by value identity, never by serialized output', () => {
-  const create = createStore({ reference: id => id, serialize: () => 'same definition' });
-  const store = create();
-  const write = prepare({ store });
-  const first = Record({ a: 1 });
-  assert.equal(store.getKey(write, first), 0n);
-  assert.equal(store.getKey(write, first), 0n);
-  assert.equal(store.getKey(write, Record({ a: 2 })), 1n);
-  assert.deepEqual(write.output, ['same definition', 'same definition']);
+test('store matching is by canonical value identity, never by serialized output', async t => {
+  const filename = await temporaryFile(t);
+  const store = createStore({ reference: id => id, serialize: () => 'same definition' })();
+  const write = createWrite({ store }, fileAdapter(filename), store.getKey);
+  assert.equal(await write(Record({ a: 1 })), 0n);
+  assert.equal(await write(Record({ a: 1 })), 0n);
+  assert.equal(await write(Record({ a: 2 })), 1n);
+  assert.equal(await readFile(filename, 'utf8'), 'same definitionsame definition');
 });
 
-test('store factories can resume restored counters and value mappings', () => {
+test('store factories can resume restored counters and value mappings', async t => {
+  const filename = await temporaryFile(t);
   const known = stringReference(7n);
   const store = createStringStore(8n, new Map([['known', known]]));
-  const write = prepare({ store });
-  assert.equal(store.getKey(write, 'known'), known);
-  assert.equal(store.getKey(write, 'next').id, 8n);
-  assert.equal(nextId(store.counter), 8n);
-  assert.equal(nextId(write.counters.get(store)), 9n);
-  assert.deepEqual(write.output, ['"next"']);
+  const write = createWrite({ store }, fileAdapter(filename), store.getKey);
+  assert.equal(await write('known'), known);
+  assert.equal((await write('next')).id, 8n);
+  assert.equal(store.counter.fork().getId(), 9n);
+  assert.equal(await readFile(filename, 'utf8'), '"next"');
 });
 
-test('String, Tuple and Record counters are independent and change only in their forks', () => {
-  const write = prepare();
-  const keys = [getKey(write, ''), getKey(write, Tuple()), getKey(write, Record())];
+test('String, Tuple and Record stores have independent counters', async t => {
+  const filename = await temporaryFile(t);
+  const stores = init();
+  const write = createWrite(stores, fileAdapter(filename));
+  const keys = [await write(''), await write(Tuple()), await write(Record())];
   assert.deepEqual(keys.map(key => [key.type, key.id]), [['S', 0n], ['A', 0n], ['O', 0n]]);
-  assert.deepEqual(counters(write), [0n, 0n, 0n]);
-  assert.deepEqual(pendingCounters(write), [1n, 1n, 1n]);
-  assert.deepEqual(write.output, ['""', '[]', '{A\u0100A\u0100}']);
+  assert.deepEqual(Object.values(stores).map(store => store.counter.fork().getId()), [1n, 1n, 1n]);
+  assert.equal(await readFile(filename, 'utf8'), '""[]{A\u0100A\u0100}');
 });
 
-test('StringStore preserves escaping and reuses references across writes', () => {
-  const stores = createStores();
-  const first = prepare(stores);
+test('StringStore preserves escaping and reuses references across writes', async t => {
+  const filename = await temporaryFile(t);
+  const write = createWrite(init(), fileAdapter(filename));
   const value = 'Oddo é 😀 " \\ \n\ud800';
-  const key = getKey(first, value);
+  const key = await write(value);
   assert.equal(`${key}`, 'S\u0100');
-  assert.equal(getKey(first, `${value}`), key);
-  assert.deepEqual(first.output, [JSON.stringify(value)]);
-  assert.equal(inspect(payload(first)).S.get(0n), value);
-  publish(first);
-  const second = prepare(stores);
-  assert.equal(getKey(second, value), key);
-  assert.deepEqual(second.output, []);
-  assert.deepEqual(second.created, []);
+  assert.equal(await write(`${value}`), key);
+  assert.equal(await readFile(filename, 'utf8'), JSON.stringify(value));
+  assert.equal([...parse(await readFile(filename))][0].value, value);
 });
 
-test('Tuple discovery emits shared children before their parent exactly once', () => {
-  const write = prepare(createStores());
+test('Tuple discovery emits shared children before their parent exactly once', async t => {
+  const filename = await temporaryFile(t);
+  const write = createWrite(init(), fileAdapter(filename));
   const child = Tuple('shared', true);
   const parent = Tuple(child, child, false, null, 1.5);
-  const key = getKey(write, parent);
+  const key = await write(parent);
   assert.equal(`${key}`, 'A\u0101');
-  assert.deepEqual(write.output, ['"shared"', '[S\u0100T]', `[A\u0100A\u0100FVN${encodeFloat(1.5)}]`]);
-  assert.equal(getKey(write, parent), key);
-  assert.equal(write.output.length, 3);
-  assert.equal(inspect(payload(write)).A.get(key.id), parent);
+  assert.equal(await write(parent), key);
+  assert.equal(await readFile(filename, 'utf8'), `"shared"[S\u0100T][A\u0100A\u0100FVN${encodeFloat(1.5)}]`);
 });
 
-test('RecordStore decomposes a Record into canonical keys and values Tuples', () => {
-  const write = prepare(createStores());
+test('RecordStore decomposes a Record into shared canonical keys and values Tuples', async t => {
+  const filename = await temporaryFile(t);
+  const write = createWrite(init(), fileAdapter(filename));
   const value = Record({ a: 1 });
-  const key = getKey(write, value);
+  const key = await write(value);
   assert.equal(`${key}`, 'O\u0100');
-  assert.deepEqual(write.output, ['"a"', '[S\u0100]', `[N${encodeFloat(1)}]`, '{A\u0100A\u0101}']);
-  assert.equal(inspect(payload(write)).O.get(key.id), value);
-  assert.equal(getKey(write, Tuple('a')).id, 0n);
-  assert.equal(getKey(write, Tuple(1)).id, 1n);
-  assert.equal(write.output.length, 4);
+  assert.equal((await write(Tuple('a'))).id, 0n);
+  assert.equal((await write(Tuple(1))).id, 1n);
+  assert.equal(await write(value), key);
+  assert.equal(await readFile(filename, 'utf8'), `"a"[S\u0100][N${encodeFloat(1)}]{A\u0100A\u0101}`);
 });
 
-test('an empty Record emits only one shared empty Tuple', () => {
-  const write = prepare(createStores());
-  getKey(write, Record());
-  assert.deepEqual(write.output, ['[]', '{A\u0100A\u0100}']);
-  assert.deepEqual(pendingCounters(write), [0n, 1n, 1n]);
+test('an empty Record emits only one shared empty Tuple', async t => {
+  const filename = await temporaryFile(t);
+  const stores = init();
+  await createWrite(stores, fileAdapter(filename))(Record());
+  assert.equal(await readFile(filename, 'utf8'), '[]{A\u0100A\u0100}');
+  assert.deepEqual(Object.values(stores).map(store => store.counter.fork().getId()), [0n, 1n, 1n]);
 });
 
-test('Record key order, index-like keys and __proto__ retain corresponding values', () => {
-  const write = prepare(createStores());
+test('Record key order, index-like keys and __proto__ retain corresponding values', async t => {
+  const filename = await temporaryFile(t);
+  const write = createWrite(init(), fileAdapter(filename));
   const entries = [['10', 'ten'], ['2', 'two'], ['__proto__', 'data'], ['z', null], ['a', 0]];
-  const value = Record(Object.fromEntries(entries));
-  const key = getKey(write, value);
-  const bytes = payload(write);
-  assert.equal(getKey(write, Record(Object.fromEntries(entries.toReversed()))), key);
-  assert.deepEqual(payload(write), bytes);
-  const decoded = inspect(bytes).O.get(key.id);
-  assert.equal(decoded, value);
-  assert.equal(Object.hasOwn(decoded, '__proto__'), true);
-  assert.equal(decoded.__proto__, 'data');
+  const key = await write(Record(Object.fromEntries(entries)));
+  const bytes = await readFile(filename);
+  assert.equal(await write(Record(Object.fromEntries(entries.toReversed()))), key);
+  assert.deepEqual(await readFile(filename), bytes);
+  const definitions = [...parse(bytes)];
+  assert.deepEqual(definitions.filter(entry => entry.type === 'string').map(entry => entry.value),
+    ['2', '10', '__proto__', 'a', 'z', 'two', 'ten', 'data']);
+  assert.deepEqual(definitions.filter(entry => entry.type === 'tuple').map(entry => entry.values), [
+    [0n, 1n, 2n, 3n, 4n].map(id => ({ type: 'S', id })),
+    [{ type: 'S', id: 5n }, { type: 'S', id: 6n }, { type: 'S', id: 7n }, 0, null],
+  ]);
+  const record = definitions.at(-1);
+  assert.deepEqual(record.keys, { type: 'A', id: 0n });
+  assert.deepEqual(record.values, { type: 'A', id: 1n });
 });
 
-test('canonical children are reused across unrelated roots and writes', () => {
-  const stores = createStores();
-  const first = prepare(stores);
+test('canonical children are reused across unrelated roots and writes', async t => {
+  const filename = await temporaryFile(t);
+  const write = createWrite(init(), fileAdapter(filename));
   const shared = Record({ values: Tuple('common', 7) });
-  const left = Record({ left: shared });
-  const leftKey = getKey(first, left);
-  const sharedKey = getKey(first, shared);
-  publish(first);
-  const second = prepare(stores);
-  const right = Record({ right: shared });
-  const rightKey = getKey(second, right);
-  assert.equal(getKey(second, shared), sharedKey);
-  assert.equal([...parse(payload(second))].filter(entry => entry.type === 'record').length, 1);
-  const decoded = inspect(Buffer.concat([payload(first), payload(second)]));
-  assert.equal(decoded.O.get(leftKey.id), left);
-  assert.equal(decoded.O.get(rightKey.id), right);
+  const leftKey = await write(Record({ left: shared }));
+  const sharedKey = await write(shared);
+  const sharedValuesKey = await write(Tuple(shared));
+  const before = (await readFile(filename)).length;
+  const rightKey = await write(Record({ right: shared }));
+  assert.equal(await write(shared), sharedKey);
+  assert.equal(rightKey.id, leftKey.id + 1n);
+  const added = [...parse((await readFile(filename)).subarray(before))];
+  assert.deepEqual(added.map(entry => entry.type), ['string', 'tuple', 'record']);
+  assert.equal(added[0].value, 'right');
+  assert.deepEqual(added[2].values, { type: 'A', id: sharedValuesKey.id });
 });
 
-test('a persisted Tuple hit makes no descendant lookup', () => {
-  const stores = createStores();
-  const first = prepare(stores);
+test('a persisted Tuple hit makes no descendant lookup', async t => {
+  const filename = await temporaryFile(t);
+  const stores = init();
+  const write = createWrite(stores, fileAdapter(filename));
   const value = Tuple(Record({ leaf: 'known' }));
-  const key = getKey(first, value);
-  publish(first);
-  const second = prepare(stores);
-  second.stringStore.getKey = () => assert.fail('Visited persisted Tuple child');
-  second.recordStore.getKey = () => assert.fail('Visited persisted Tuple child');
-  assert.equal(getKey(second, value), key);
-  assert.deepEqual(second.output, []);
+  const key = await write(value);
+  const before = await readFile(filename);
+  stores.stringStore.getKey = () => assert.fail('Visited persisted Tuple child');
+  stores.recordStore.getKey = () => assert.fail('Visited persisted Tuple child');
+  assert.equal(await write(value), key);
+  assert.deepEqual(await readFile(filename), before);
 });
 
-test('a persisted Record hit does not decompose its keys or values again', () => {
-  const stores = createStores();
-  const first = prepare(stores);
+test('a persisted Record hit does not decompose its keys or values again', async t => {
+  const filename = await temporaryFile(t);
+  const stores = init();
+  const write = createWrite(stores, fileAdapter(filename));
   const value = Record({ leaf: Tuple('known') });
-  const key = getKey(first, value);
-  publish(first);
-  const second = prepare(stores);
-  second.tupleStore.getKey = () => assert.fail('Decomposed persisted Record');
-  assert.equal(getKey(second, value), key);
-  assert.deepEqual(second.output, []);
+  const key = await write(value);
+  const before = await readFile(filename);
+  stores.tupleStore.getKey = () => assert.fail('Decomposed persisted Record');
+  assert.equal(await write(value), key);
+  assert.deepEqual(await readFile(filename), before);
 });
 
-test('a reused child stops discovery inside a new parent', () => {
-  const stores = createStores();
-  const first = prepare(stores);
-  const child = Tuple('known leaf');
-  getKey(first, child);
-  publish(first);
-  const second = prepare(stores);
-  const lookup = second.stringStore.getKey;
-  second.stringStore.getKey = (write, value) => {
-    assert.notEqual(value, 'known leaf', 'Visited an already persisted descendant');
-    return lookup(write, value);
+test('a reused child stops discovery inside a new parent', async t => {
+  const filename = await temporaryFile(t);
+  const stores = init();
+  const write = createWrite(stores, fileAdapter(filename));
+  const childKey = await write(Tuple('known leaf'));
+  const before = (await readFile(filename)).length;
+  const lookup = stores.stringStore.getKey;
+  stores.stringStore.getKey = (transaction, value) => {
+    assert.equal(value, 'child', 'Only the new field name needs a string lookup');
+    return lookup(transaction, value);
   };
-  const parent = Record({ child });
-  const key = getKey(second, parent);
-  assert.equal(inspect(Buffer.concat([payload(first), payload(second)])).O.get(key.id), parent);
+  await write(Record({ child: Tuple('known leaf') }));
+  assert.equal((await readFile(filename)).subarray(before).toString('utf8'),
+    `"child"[S\u0101][${childKey}]{A\u0101A\u0102}`);
 });
 
-test('only counters are forked and published while stores and lookup functions remain stable', () => {
-  const stores = createStores();
+test('only counters are forked and adopted; stores and lookup functions remain stable', async t => {
+  const filename = await temporaryFile(t);
+  const stores = init();
   const instances = Object.values(stores);
   const lookups = instances.map(store => store.getKey);
   const originalCounters = instances.map(store => store.counter);
-  const first = prepare(stores);
-  assert.equal(first.stringStore, stores.stringStore);
-  assert.equal(first.tupleStore, stores.tupleStore);
-  assert.equal(first.recordStore, stores.recordStore);
-  for (const store of instances) assert.notEqual(first.counters.get(store), store.counter);
-  getKey(first, Record({ first: Tuple('one') }));
-  assert.deepEqual(counters(stores), [0n, 0n, 0n]);
-  publish(first);
-  assert.deepEqual(originalCounters.map(nextId), [0n, 0n, 0n]);
+  const write = createWrite(stores, fileAdapter(filename));
+  await write(Record({ first: Tuple('one') }));
+  assert.deepEqual(originalCounters.map(counter => counter.fork().getId()), [0n, 0n, 0n]);
   for (const [i, store] of instances.entries()) {
     assert.equal(Object.values(stores)[i], store);
     assert.equal(store.getKey, lookups[i]);
-    assert.equal(store.counter, first.counters.get(store));
+    assert.notEqual(store.counter, originalCounters[i]);
   }
-  const before = counters(stores);
-  assert.ok(before.every(counter => counter > 0n));
-  const second = prepare(stores);
-  assert.equal(getKey(second, Record({ second: Tuple('two') })).id, before[2]);
-  assert.deepEqual(counters(stores), before);
-  assert.ok(pendingCounters(second).every((counter, i) => counter > before[i]));
+  const before = instances.map(store => store.counter.fork().getId());
+  assert.ok(before.every(id => id > 0n));
+  assert.equal((await write(Record({ second: Tuple('two') }))).id, before[2]);
+  assert.ok(instances.every((store, i) => store.counter.fork().getId() > before[i]));
 });
 
-test('rollback removes new mappings and retained failed values retry with identical IDs and definitions', () => {
-  const stores = createStores();
-  const committed = prepare(stores);
-  const old = Record({ old: Tuple('committed') });
-  const oldKey = getKey(committed, old);
-  publish(committed);
-  const before = counters(stores);
-  const originalCounters = Object.values(stores).map(store => store.counter);
-  const retained = Record({ new: Tuple('failed', Record({ nested: true })), old });
-  const failed = prepare(stores);
-  const key = getKey(failed, retained);
-  const bytes = payload(failed);
-  const journal = failed.created.slice();
-  assert.ok(journal.every(([keys, value]) => keys.has(value)));
-  rollback(failed.created);
-  assert.ok(journal.every(([keys, value]) => !keys.has(value)));
-  assert.deepEqual(failed.created, []);
-  assert.deepEqual(counters(stores), before);
-  Object.values(stores).forEach((store, i) => assert.equal(store.counter, originalCounters[i]));
-  const retry = prepare(stores);
-  assert.equal(getKey(retry, old), oldKey);
-  assert.deepEqual(retry.output, []);
-  assert.equal(`${getKey(retry, retained)}`, `${key}`);
-  assert.deepEqual(payload(retry), bytes);
-  assert.equal(inspect(Buffer.concat([payload(committed), payload(retry)])).O.get(key.id), retained);
-  // An already-cleared journal cannot undo entries inserted by the retry.
-  rollback(failed.created);
-  publish(retry);
-  const next = prepare(stores);
-  getKey(next, retained);
-  assert.deepEqual(next.output, []);
-});
-
-test('a serializer failure after creating all three kinds of value is recoverable through the journal', () => {
-  const stores = createStores();
+test('a serializer failure removes speculative mappings without calling the adapter', async t => {
+  const filename = await temporaryFile(t);
+  const stores = init();
   const error = new Error('injected serialization failure');
+  let journal;
   stores.stringStore = createStore({
     reference: stringReference,
-    serialize: (_write, value) => {
-      if (value === 'fail here') throw error;
+    serialize: (transaction, value) => {
+      if (value === 'fail here') {
+        journal = transaction.created.slice();
+        throw error;
+      }
       return encodeString(value);
     },
   })();
+  const adapter = fileAdapter(filename);
+  const append = t.mock.method(adapter, 'write');
+  const truncate = t.mock.method(adapter, 'truncate');
+  const write = createWrite(stores, adapter);
   const child = Record({ valid: Tuple('new child') });
-  const failed = prepare(stores);
-  assert.throws(() => getKey(failed, Tuple(child, 'fail here')), thrown => thrown === error);
-  assert.ok(pendingCounters(failed).every(counter => counter > 0n));
-  const journal = failed.created.slice();
-  rollback(failed.created);
+  await assert.rejects(write(Tuple(child, 'fail here')), thrown => thrown === error);
+  assert.equal(append.mock.callCount(), 0);
+  assert.equal(truncate.mock.callCount(), 0);
+  assert.ok(journal.length > 0);
   assert.ok(journal.every(([keys, value]) => !keys.has(value)));
-  assert.deepEqual(counters(stores), [0n, 0n, 0n]);
-  const retry = prepare(stores);
-  const key = getKey(retry, child);
-  assert.equal(key.id, 0n);
-  assert.equal(inspect(payload(retry)).O.get(key.id), child);
+  assert.deepEqual(Object.values(stores).map(store => store.counter.fork().getId()), [0n, 0n, 0n]);
+  assert.equal((await write(child)).id, 0n);
+  assert.deepEqual([...parse(await readFile(filename))].map(entry => entry.type),
+    ['string', 'tuple', 'string', 'tuple', 'tuple', 'record']);
 });
 
-test('a definition-output failure still leaves every inserted mapping in the rollback journal', () => {
-  const stores = createStores();
-  const value = Record({ child: Tuple('new') });
-  const failed = prepare(stores);
+test('a definition-output failure rolls back every inserted mapping', async t => {
+  const filename = await temporaryFile(t);
+  const stores = init();
   const error = new Error('injected output failure');
-  failed.output.push = definition => {
-    if (definition.startsWith('{')) throw error;
-    return Array.prototype.push.call(failed.output, definition);
-  };
-  assert.throws(() => getKey(failed, value), thrown => thrown === error);
-  assert.ok(pendingCounters(failed).every(counter => counter > 0n));
-  rollback(failed.created);
-  const retry = prepare(stores);
-  const key = getKey(retry, value);
-  assert.equal(inspect(payload(retry)).O.get(key.id), value);
+  let fail = true;
+  let journal;
+  const write = createWrite(stores, fileAdapter(filename), (transaction, value) => {
+    if (fail) transaction.output.push = definition => {
+      if (definition.startsWith('{')) {
+        journal = transaction.created.slice();
+        throw error;
+      }
+      return Array.prototype.push.call(transaction.output, definition);
+    };
+    return getKey(transaction, value);
+  });
+  const value = Record({ child: Tuple('new') });
+  await assert.rejects(write(value), thrown => thrown === error);
+  assert.ok(journal.every(([keys, child]) => !keys.has(child)));
+  assert.deepEqual(Object.values(stores).map(store => store.counter.fork().getId()), [0n, 0n, 0n]);
+  fail = false;
+  assert.equal((await write(value)).id, 0n);
+  assert.equal(await readFile(filename, 'utf8'), '"child"[S\u0100]"new"[S\u0101][A\u0101]{A\u0100A\u0102}');
 });
 
-test('inline primitives emit no definitions and negative-zero normalization stays in the codec', () => {
-  const write = prepare(createStores());
-  assert.equal(getKey(write, null), 'V');
-  assert.equal(getKey(write, true), 'T');
-  assert.equal(getKey(write, false), 'F');
-  assert.equal(getKey(write, -0), 'N\u0100');
-  assert.deepEqual(write.output, []);
+test('inline primitives emit no definitions and negative-zero normalization stays in the codec', async t => {
+  const filename = await temporaryFile(t);
+  const write = createWrite(init(), fileAdapter(filename));
+  assert.equal(await write(null), 'V');
+  assert.equal(await write(true), 'T');
+  assert.equal(await write(false), 'F');
+  assert.equal(await write(-0), 'N\u0100');
+  assert.equal(await readFile(filename, 'utf8'), '');
   const value = Tuple('store signed-zero test', -0, NaN, Infinity, -Infinity);
-  getKey(write, value);
-  const tuple = [...parse(payload(write))].find(entry => entry.type === 'tuple');
+  await write(value);
+  const tuple = [...parse(await readFile(filename))].find(entry => entry.type === 'tuple');
   assert.equal(Object.is(value[1], -0), true);
   assert.equal(Object.is(tuple.values[1], -0), false);
   assert.ok(Number.isNaN(tuple.values[2]));
@@ -338,36 +285,32 @@ test('inline primitives emit no definitions and negative-zero normalization stay
   assert.equal(tuple.values[4], -Infinity);
 });
 
-test('separate databases assign independent IDs to the same canonical values', () => {
-  const leftStores = createStores();
-  const rightStores = createStores();
-  const left = prepare(leftStores);
-  getKey(left, Record({ seed: 'left only' }));
-  publish(left);
-  const first = prepare(leftStores);
-  const right = prepare(rightStores);
+test('separate store sets assign independent IDs to the same canonical values', async t => {
+  const left = createWrite(init(), fileAdapter(await temporaryFile(t)));
+  const right = createWrite(init(), fileAdapter(await temporaryFile(t)));
+  await left(Record({ seed: 'left only' }));
   const common = Record({ common: Tuple(42) });
-  assert.equal(getKey(first, common).id, 1n);
-  const rightKey = getKey(right, common);
+  assert.equal((await left(common)).id, 1n);
+  const rightKey = await right(common);
   assert.equal(rightKey.id, 0n);
-  rollback(first.created);
-  publish(right);
-  const next = prepare(rightStores);
-  assert.equal(getKey(next, common), rightKey);
-  assert.deepEqual(next.output, []);
+  assert.equal(await right(common), rightKey);
 });
 
-test('one collected output encodes into an independent UTF-8 buffer', () => {
-  const write = prepare(createStores());
-  const value = Tuple('é😀', '"\\\ud800');
-  const key = getKey(write, value);
-  const text = write.output.join('');
-  const bytes = payload(write);
-  assert.equal(bytes.length, Buffer.byteLength(text));
-  assert.ok(bytes.length > text.length);
-  assert.equal(inspect(bytes).A.get(key.id), value);
-  bytes.fill(0);
-  assert.equal(payload(write).toString('utf8'), text);
+test('one write passes an encoded UTF-8 buffer to the filesystem adapter', async t => {
+  const filename = await temporaryFile(t);
+  const adapter = fileAdapter(filename);
+  const append = t.mock.method(adapter, 'write');
+  const write = createWrite(init(), adapter);
+  const key = await write(Tuple('é😀', '"\\\ud800'));
+  assert.equal(append.mock.callCount(), 1);
+  const [bytes] = append.mock.calls[0].arguments;
+  assert.ok(Buffer.isBuffer(bytes));
+  assert.deepEqual(await readFile(filename), bytes);
+  assert.ok(bytes.length > bytes.toString('utf8').length);
+  assert.equal(key.id, 0n);
+  const definitions = [...parse(bytes)];
+  assert.deepEqual(definitions.slice(0, 2).map(entry => entry.value), ['é😀', '"\\\ud800']);
+  assert.deepEqual(definitions[2].values, [{ type: 'S', id: 0n }, { type: 'S', id: 1n }]);
 });
 
 test('typed references retain their bigint IDs and compact namespace letters', () => {

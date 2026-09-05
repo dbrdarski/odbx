@@ -5,10 +5,11 @@ with O for Oddo. The agreed integration brings the minimal exploratory Oddo runt
 into a separate local module and exports the same constructors to callers.
 
 Work proceeds in bounded batches. **Parser + codec**, **local Oddo runtime**, and
-**value stores** are implemented. This checkpoint covers value discovery, counter
-forks and mapping rollback through a customizable store factory. Subsequent order:
-Documents/Revisions → transactional writes and replay/recovery → public API and
-integration. Settled requirements stay in force across all batches.
+**value stores** are implemented. Store initialization and the queued value-write
+lifecycle now live in source: discovery, payload encoding, awaited append, counter
+publication, rollback and truncation. Document/Revision assembly, transactional
+replay and the public database API remain pending. Settled requirements stay in
+force across all batches.
 
 | Requirement | Status / evidence |
 | --- | --- |
@@ -18,9 +19,9 @@ integration. Settled requirements stay in force across all batches.
 | §4, §14: primitive domain, no BigInt value token, no undefined token, `-0` normalization, ordinary NaN | Done for codec/parser and native Oddo value stores; JavaScript conversion belongs to deferred wrappers |
 | §5, §7–8: String/Tuple/Record stores, canonical-reference Maps, subtree short-circuit, key/value decomposition, child-first discovery | Done in `src/stores.mjs`; references in `src/symbols.mjs`; `test/stores.test.mjs` |
 | §5–6, §15–16: first-class Document/Revision stores, numeric IDs, Document type, metadata, timestamp, actual `from` ancestry | Definition syntax done; `D<typeId>:<documentId>` references encode type scope. Stores remain pending: one Document store per type and one Revision store per Document, with encounter-order type IDs |
-| §6–9: fork all counters, journal speculative mappings, failure consumes no IDs, stage publication | Done for value-store forks and mapping rollback in memory; Document/Revision staging and database transaction orchestration pending |
-| §9–10, §19: queue covers discovery through publication/rollback, one awaited append, byte offset accounting | Parser byte offsets done; writes pending |
-| §9–11: rollback and truncate after partial writes, preserve committed state, block writes after failed recovery | Pending transactions and file adapter |
+| §6–9: fork all counters, journal speculative mappings, failure consumes no IDs, stage publication | Done for value stores through `src/write.mjs`; Document/Revision staging pending |
+| §9–10, §19: queue covers discovery through publication/rollback, one awaited append, byte offset accounting | Done for value writes in `src/write.mjs` and `src/adapters/file.mjs`; final Revision assembly remains pending |
+| §9–11: rollback and truncate after partial writes, preserve committed state, block writes after failed recovery | Done for value writes; `test/write.test.mjs` exercises the real file adapter with injected append/truncate failures |
 | §11–12: sequential parser, leading-token dispatch, no full token array, malformed/incomplete suffix detection | Done in `src/parser.mjs`; tests include all digit scalars, invalid UTF-8, string escapes and every-byte truncation |
 | §11–12: child-first reconstruction, provisional replay, publish only at valid complete Revision, truncate uncommitted suffix | Complete syntax boundaries exposed; store replay and filesystem recovery pending |
 | §12: retain compact grammar, typed reference letters and implicit definition sequence | Done at syntax level; Document references include type ID and local Document ID separated by `:`, per the agreed scope correction; Tuple roots supported |
@@ -28,9 +29,9 @@ integration. Settled requirements stay in force across all batches.
 | §14, §23.8: explicit-endian Float64 codec, finite extremes, infinities, NaN, `-0` | Done; fixed representation fixtures and 4,096 deterministic bit samples |
 | §15–19: ancestry/history, archive/restore revisions and metadata duplication, tri-state filtering, committed-only reads | Pending Document/Revision behavior and public API |
 | §20: minimal ESM package, built-in Node modules, real test command | Done for this batch; no dependencies |
-| §23.1: reuse across saves/documents, descendant traversal stops, provisional child reuse | Value-store tests done across roots and writes in memory; actual document saves pending |
-| §23.2–3: counter rollback, retained failed canonical values, correct retry references | Value-store tests done, including injected discovery/output failures and identical retry payloads; file and Document/Revision transaction tests pending |
-| §23.4: partial append failures, truncation, ID reuse and next successful transaction | Pending file/transaction tests |
+| §23.1: reuse across saves/documents, descendant traversal stops, provisional child reuse | Value-store tests done across roots and actual file writes; document saves pending |
+| §23.2–3: counter rollback, retained failed canonical values, correct retry references | Value-store tests done, including discovery/output/append failures and identical retry bytes; Document/Revision tests pending |
+| §23.4: partial append failures, truncation, ID reuse and next successful transaction | Done for value writes at every byte prefix of a UTF-8 payload, including a complete append followed by rejection; Document/Revision integration pending |
 | §23.5: reopen at byte truncations and commit only complete Revisions | Parser truncation tests done; actual reopen/replay tests pending |
 | §23.6: chronological latest independent of `from` ancestry | Pending versioning tests |
 | §23.7: archive/restore success, failure, data reuse, filters and retained history | Pending archive tests |
