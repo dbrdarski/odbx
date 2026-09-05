@@ -8,6 +8,7 @@ const reference = type => id => {
 export const stringReference = reference('S');
 export const tupleReference = reference('A');
 export const recordReference = reference('O');
+export const revisionReference = reference('R');
 
 export const documentReference = typeId => id => {
   const token = `D${encodeInt(typeId)}:${encodeInt(id)}`;

@@ -1,5 +1,5 @@
 import { encodePrimitive, encodeString } from './codec.mjs';
-import { stringReference, tupleReference, recordReference } from './symbols.mjs';
+import { stringReference, tupleReference, recordReference, documentReference, revisionReference } from './symbols.mjs';
 import { Record, Tuple } from './values.mjs';
 
 const createCounter = value => ({
@@ -45,6 +45,17 @@ export const createRecordStore = createStore({
     const values = getKey(write, Tuple(...Object.values(value)));
     return `{${keys}${values}}`;
   },
+});
+
+export const createDocumentStore = type => createStore({
+  reference: documentReference(type),
+  serialize: (write, document) => `<${getKey(write, document.type)}>`,
+});
+
+export const createRevisionStore = type => documentId => createStore({
+  reference: revisionReference,
+  serialize: (write, { metadata, data, archived }) =>
+    `(${documentReference(type)(documentId)}${getKey(write, metadata)}${getKey(write, data)}${encodePrimitive(archived)})`,
 });
 
 export function getKey(write, value) {
