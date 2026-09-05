@@ -5,10 +5,9 @@ The **O** stands for **Oddo**. The implementation specification is
 [the MVP handover](odbx-mvp-development-handover.md).
 
 The implemented batches contain the compact codec, sequential parser, local Oddo
-Record/Tuple runtime, and [value stores](docs/stores.md) with source initialization
-and queued, awaited file writes, counter publication, rollback and truncation.
-Document/Revision stores, the database API and transactional replay are subsequent
-batches.
+Record/Tuple runtime, and [value stores](docs/stores.md) with source initialization.
+Document/Revision stores, write orchestration, file persistence, the database API
+and transactional replay remain pending.
 
 Run the tests with Node.js 22 or later:
 
