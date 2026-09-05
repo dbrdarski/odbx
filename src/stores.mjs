@@ -13,7 +13,7 @@ export function createStore({ reference, serialize }) {
       counter: createCounter(counter),
       getKey(write, value) {
         const existing = keys.get(value);
-        if (existing !== undefined) return existing;
+        if (existing != null) return existing;
         // Serialization discovers children before allocating the parent ID.
         const definition = serialize(write, value);
         const key = reference(write.counters.get(store).getId());
@@ -29,7 +29,7 @@ export function createStore({ reference, serialize }) {
 
 export const createStringStore = createStore({
   reference: stringReference,
-  serialize: (_write, value) => encodeString(value),
+  serialize: (_, value) => encodeString(value),
 });
 
 export const createTupleStore = createStore({
