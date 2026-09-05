@@ -13,7 +13,8 @@ export class ParseError extends SyntaxError {
 
 /**
  * Yield complete entries in physical order without materializing a token array.
- * References are { type: 'S' | 'A' | 'O' | 'D' | 'R', id: bigint }.
+ * References are { type: 'S' | 'A' | 'O' | 'R', id: bigint } or
+ * { type: 'D', typeId: bigint, id: bigint } for a Document within its type.
  * Offsets are UTF-8 bytes, including for string input. Pass file bytes directly
  * so invalid UTF-8 in a torn suffix cannot be replaced during string decoding.
  *
@@ -115,6 +116,11 @@ class Scanner {
     const type = this.#peek();
     if (!types.includes(type)) this.#fail(`Expected ${types} reference`);
     this.#offset++;
+    if (type === 'D') {
+      const typeId = this.#integer();
+      this.#expect(':');
+      return { type, typeId, id: this.#integer() };
+    }
     return { type, id: this.#integer() };
   }
 
@@ -198,8 +204,8 @@ class Scanner {
       }
       case '<': {
         this.#offset++;
-        // Numeric Document identity comes from the store counter, replacing the
-        // historical UUID String field. The type String reference remains.
+        // Replay numbers Documents within each type and assigns type ordinals
+        // on first appearance. This definition retains the type String reference.
         const documentType = this.#reference('S');
         this.#expect('>');
         entry = { type: 'document', documentType };

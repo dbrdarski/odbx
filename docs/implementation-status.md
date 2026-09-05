@@ -17,13 +17,13 @@ integration. Settled requirements stay in force across all batches.
 | §4.3, clarified by Dane: Oddo never produces undefined; JavaScript wrappers normalize host undefined before native construction | Deferred with JavaScript wrappers; no normalization in the Oddo runtime or storage kernel |
 | §4, §14: primitive domain, no BigInt value token, no undefined token, `-0` normalization, ordinary NaN | Done for codec/parser and native Oddo value stores; JavaScript conversion belongs to deferred wrappers |
 | §5, §7–8: String/Tuple/Record stores, canonical-reference Maps, subtree short-circuit, key/value decomposition, child-first discovery | Done in `src/stores.mjs`; references in `src/symbols.mjs`; `test/stores.test.mjs` |
-| §5–6, §15–16: first-class Document/Revision stores, numeric IDs, Document type, metadata, timestamp, actual `from` ancestry | Definition syntax done; stores and semantics pending |
+| §5–6, §15–16: first-class Document/Revision stores, numeric IDs, Document type, metadata, timestamp, actual `from` ancestry | Definition syntax done; `D<typeId>:<documentId>` references encode type scope. Stores remain pending: one Document store per type and one Revision store per Document, with encounter-order type IDs |
 | §6–9: fork all counters, journal speculative mappings, failure consumes no IDs, stage publication | Done for value-store forks and mapping rollback in memory; Document/Revision staging and database transaction orchestration pending |
 | §9–10, §19: queue covers discovery through publication/rollback, one awaited append, byte offset accounting | Parser byte offsets done; writes pending |
 | §9–11: rollback and truncate after partial writes, preserve committed state, block writes after failed recovery | Pending transactions and file adapter |
 | §11–12: sequential parser, leading-token dispatch, no full token array, malformed/incomplete suffix detection | Done in `src/parser.mjs`; tests include all digit scalars, invalid UTF-8, string escapes and every-byte truncation |
 | §11–12: child-first reconstruction, provisional replay, publish only at valid complete Revision, truncate uncommitted suffix | Complete syntax boundaries exposed; store replay and filesystem recovery pending |
-| §12: retain compact grammar, typed reference letters and implicit definition sequence | Done at syntax level; numeric Document identity removes historical UUID field, Tuple roots supported |
+| §12: retain compact grammar, typed reference letters and implicit definition sequence | Done at syntax level; Document references include type ID and local Document ID separated by `:`, per the agreed scope correction; Tuple roots supported |
 | §13, §23.9: radix 63,232, surrogate hole, digit and integer boundaries | Done in `src/codec.mjs`; exhaustive one-digit and large-counter tests |
 | §14, §23.8: explicit-endian Float64 codec, finite extremes, infinities, NaN, `-0` | Done; fixed representation fixtures and 4,096 deterministic bit samples |
 | §15–19: ancestry/history, archive/restore revisions and metadata duplication, tri-state filtering, committed-only reads | Pending Document/Revision behavior and public API |

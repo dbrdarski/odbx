@@ -2,11 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parse, ParseError } from '../src/parser.mjs';
 import { encodeInt, encodeFloat, encodeString, encodePrimitive } from '../src/codec.mjs';
+import { documentReference } from '../src/symbols.mjs';
 
 const ref = (type, id) => `${type}${encodeInt(id)}`;
 const reference = (type, id) => ({ type, id: BigInt(id) });
-const revision = (dataType = 'O', archived = false) =>
-  `(${ref('D', 1)}${ref('O', 0)}${ref(dataType, 0)}${archived ? 'T' : 'F'})`;
+const documentRef = (typeId, id) => `D${encodeInt(typeId)}:${encodeInt(id)}`;
+const documentDescriptor = (typeId, id) => ({ type: 'D', typeId: BigInt(typeId), id: BigInt(id) });
+const revision = (dataType = 'O', archived = false, typeId = 1, documentId = 1) =>
+  `(${documentRef(typeId, documentId)}${ref('O', 0)}${ref(dataType, 0)}${archived ? 'T' : 'F'})`;
 const values = input => [...parse(input)].map(({ startOffset, endOffset, ...entry }) => entry);
 
 function failure(input, incomplete = false) {
@@ -33,7 +36,7 @@ test('all definition forms parse in sequence with byte-accurate extents', () => 
     { type: 'tuple', values: [reference('S', 0), true, false, null, 1.5] },
     { type: 'record', keys: reference('A', 0), values: reference('A', 1) },
     { type: 'document', documentType: reference('S', 0) },
-    { type: 'revision', document: reference('D', 1), metadata: reference('O', 0),
+    { type: 'revision', document: documentDescriptor(1, 1), metadata: reference('O', 0),
       data: reference('O', 0), archived: false },
   ]);
   let offset = 0;
@@ -58,9 +61,50 @@ test('empty input, empty definitions and historical standalone basic tokens', ()
 test('all reference letters and large IDs retain their separate namespaces', () => {
   const ids = [0n, 1n, 55_039n, 55_040n, 63_231n, 63_232n, 1n << 100n];
   for (const id of ids) {
-    assert.deepEqual(values(`[${'SAODR'.split('').map(type => ref(type, id)).join('')}]`), [
-      { type: 'tuple', values: 'SAODR'.split('').map(type => reference(type, id)) },
+    assert.deepEqual(values(`[${'SAOR'.split('').map(type => ref(type, id)).join('')}${documentRef(1, id)}]`), [
+      { type: 'tuple', values: [...'SAOR'.split('').map(type => reference(type, id)), documentDescriptor(1, id)] },
     ]);
+  }
+});
+
+test('Document reference factories bind the type and preserve separate local IDs', () => {
+  const firstType = documentReference(1n);
+  const secondType = documentReference(2n);
+  const first = firstType(1n);
+  const second = secondType(1n);
+  assert.equal(`${first}`, 'D\u0101:\u0101');
+  assert.equal(`${second}`, 'D\u0102:\u0101');
+  assert.equal(`${firstType(2n)}`, 'D\u0101:\u0102');
+  assert.equal(first.type, 'D');
+  assert.equal(first.typeId, 1n);
+  assert.equal(first.id, 1n);
+  assert.deepEqual(values(`[${first}${second}]`), [{
+    type: 'tuple', values: [documentDescriptor(1, 1), documentDescriptor(2, 1)],
+  }]);
+});
+
+test('both Document reference components accept compact digit boundaries and large integers', () => {
+  const ids = [0n, 1n, 55_039n, 55_040n, 63_231n, 63_232n, 1n << 100n];
+  for (const typeId of ids) {
+    for (const id of ids) {
+      const token = documentReference(typeId)(id);
+      const [entry] = parse(Buffer.from(`(${token}O\u0100A\u0100F)`));
+      assert.deepEqual(entry.document, documentDescriptor(typeId, id));
+    }
+  }
+});
+
+test('Document references require a colon and both integer components', () => {
+  for (const input of [
+    '[D\u0101]', '[D:\u0101]', '[D\u0101:]', '[D\u0101::\u0102]',
+    '[D\u0101:\u0102:\u0103]', '[D\u0101/\u0102]', '[D1:2]',
+    '[D\u0101 :\u0102]', '[D\u0101: \u0102]',
+    '(D\u0101O\u0100O\u0100F)',
+  ]) failure(input);
+  for (const input of ['[D', '[D\u0101', '[D\u0101:']) failure(input, true);
+  for (const digit of ['\u0080', '\u00ff', '😀']) {
+    failure(`[D${digit}:\u0101]`);
+    failure(`[D\u0101:${digit}]`);
   }
 });
 
@@ -85,7 +129,7 @@ test('Revision supports Record and Tuple data roots and both archive states', ()
 test('string escaping, Unicode and lone surrogates round trip as string content', () => {
   const strings = [
     '', '"\\/\b\f\n\r\t', '\u0000\u001f', 'Oddo е 😀',
-    '[]{}<>()SAODRNTFV+-', '\u0100\ud7ff\ue000\uffff',
+    '[]{}<>()SAODRNTFV+-:', '\u0100\ud7ff\ue000\uffff',
     '\ud800', '\udfff', '\ud800x\udfff', '\\u0100',
   ];
   for (const value of strings) assert.deepEqual(values(encodeString(value)), [{ type: 'string', value }]);
@@ -117,10 +161,10 @@ test('definitions enforce field types, arity, delimiters and flat child-first sy
     '[N]', '[S]', '[A]', '[O]', '[D]', '[R]', '{}', '{A\u0100}',
     '{O\u0100A\u0100}', '{A\u0100S\u0100}', '{A\u0100A\u0100A\u0100}',
     '<>', '<N\u0100>', '<S\u0100S\u0101>', '<S\u0100T>',
-    '()', '(S\u0100O\u0100O\u0100F)', '(D\u0101A\u0100O\u0100F)',
-    '(D\u0101O\u0100S\u0100F)', '(D\u0101O\u0100O\u0100V)',
-    '(D\u0101O\u0100O\u0100)', '(D\u0101O\u0100O\u0100FF)',
-    '(D\u0101O\u0100O\u0100F]', '(D\u0101O\u0100O\u0100 F)',
+    '()', '(S\u0100O\u0100O\u0100F)', '(D\u0101:\u0101A\u0100O\u0100F)',
+    '(D\u0101:\u0101O\u0100S\u0100F)', '(D\u0101:\u0101O\u0100O\u0100V)',
+    '(D\u0101:\u0101O\u0100O\u0100)', '(D\u0101:\u0101O\u0100O\u0100FF)',
+    '(D\u0101:\u0101O\u0100O\u0100F]', '(D\u0101:\u0101O\u0100O\u0100 F)',
   ];
   for (const input of malformed) failure(input);
 });
@@ -131,7 +175,7 @@ test('invalid JSON string escapes are rejected, including incomplete escapes', (
 });
 
 test('partial definitions and missing integer digits are incomplete at EOF', () => {
-  for (const input of ['[', '[T', '[N', '[S', '[A\u0100', '{', '{A\u0100', '<S', '(D\u0101O\u0100O\u0100F']) {
+  for (const input of ['[', '[T', '[N', '[S', '[A\u0100', '{', '{A\u0100', '<S', '(D\u0101:\u0101O\u0100O\u0100F']) {
     failure(input, true);
   }
 });
@@ -201,7 +245,7 @@ test('every byte truncation yields only completed entries and complete Revision 
   const definitions = [
     '"type"', '<S\u0100>', '[]', '{A\u0100A\u0100}', revision(),
     encodeString('é 😀 \\ "\n'), `[S${encodeInt(55_040)}N${encodeFloat(Math.PI)}]`,
-    '{A\u0100A\u0101}', revision('A', true), '"uncommitted definition"',
+    '{A\u0100A\u0101}', revision('A', true, 63_232n, 1n << 100n), '"uncommitted definition"',
   ];
   const bytes = Buffer.from(definitions.join(''));
   const complete = [...parse(bytes)];

@@ -23,7 +23,7 @@ integer       = digit+
 string-ref    = S integer
 tuple-ref     = A integer
 record-ref    = O integer
-document-ref  = D integer
+document-ref  = D integer : integer
 revision-ref  = R integer
 reference     = string-ref | tuple-ref | record-ref | document-ref | revision-ref
 boolean       = T | F
@@ -40,14 +40,25 @@ entry         = string | tuple | record | document | revision | basic
 file          = entry*
 ```
 
+Document references contain the type ID, a literal ASCII `:`, and the Document's
+local ID within that type. Both IDs use the existing compact integer encoding.
+The delimiter separates their variable-length encodings. A Document reference
+without the type ID and delimiter is rejected. `documentReference(typeId)(id)`
+in `src/symbols.mjs` binds the type ID and constructs these references.
+
 The record fields are keys Tuple, then values Tuple. Revision fields are Document,
 metadata Record, data root, and archive state. Data roots accept Records and Tuples,
 the native composite values specified for odbx. Historical `A` and `O` letters stay.
 
-Document definitions keep the type String reference. With the specified change
-from UUIDs to counter identity, their ID is implicit in the DocumentStore definition
-sequence; the historical UUID String field is omitted. Document and Revision stores
-will assign public numeric IDs starting at 1. The parser does not assign IDs.
+Document definitions keep the type String reference. Type IDs start at 1 and follow
+the order in which distinct types first appear in Document definitions; they are
+separate from StringStore IDs. Document IDs start at 1 within each type, and Revision
+IDs start at 1 within each Document. These IDs remain implicit in their respective
+definition sequences; the historical UUID String field is omitted.
+
+The parser exposes syntax only. The future store/replay layer must maintain these
+scopes and publish new type assignments with the transaction's complete Revision,
+discarding provisional assignments on failure or an incomplete suffix.
 
 Basic standalone `T`, `F`, and `V` entries retain the old grammar's syntax. Numbers
 and typed references occur in value positions. Inline nested definitions and inline
@@ -95,7 +106,8 @@ bytes, plus the following fields:
 | `revision` | `document`, `metadata`, `data`: references; `archived`: Boolean |
 | `primitive` | `value`: Boolean or null |
 
-References have the shape `{ type: 'S' | 'A' | 'O' | 'D' | 'R', id: bigint }`.
+Document references have the shape `{ type: 'D', typeId: bigint, id: bigint }`.
+Other references have the shape `{ type: 'S' | 'A' | 'O' | 'R', id: bigint }`.
 These are parser descriptors, not a new user-storable value type. The later store
 layer resolves references, checks existence and counter ranges, and reconstructs
 canonical values. The parser accepts the historical reference letters in Tuple
