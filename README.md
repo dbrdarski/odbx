@@ -4,14 +4,37 @@ Append-only versioned content storage for Oddo canonical Records and Tuples.
 The **O** stands for **Oddo**. The implementation specification is
 [the MVP handover](odbx-mvp-development-handover.md).
 
-The first implementation batch contains the compact codec and sequential parser.
-The value runtime, stores, database API and file recovery are subsequent batches.
+The implemented batches contain the compact codec, sequential parser, and local
+Oddo Record/Tuple runtime. Stores, the database API and file recovery are subsequent
+batches.
 
 Run the tests with Node.js 22 or later:
 
 ```sh
 npm test
 ```
+
+Import the shared constructors from odbx:
+
+```js
+import { Record, Tuple } from 'odbx';
+
+const content = Record({ title: 'Oddo', tags: Tuple('database', null) });
+content === Record({ tags: Tuple('database', null), title: 'Oddo' }); // true
+content instanceof Record; // true
+content.tags instanceof Tuple; // true
+
+// Construct a changed value while retaining the original and its shared child.
+const updated = Record({ ...content, title: 'odbx' });
+updated.tags === content.tags; // true
+```
+
+Construct child Records/Tuples before their parents. These are the unchanged shallow
+Oddo constructors. Oddo never produces `undefined`; handling host JavaScript
+`undefined` belongs in the later JavaScript wrappers. Callers must treat returned
+canonical values as immutable; the source runtime relies on that boundary and does
+not prevent direct JavaScript writes. See [runtime details](docs/values.md) for the
+source revision and the separation between Oddo values and JavaScript integration.
 
 The parser accepts a UTF-8 `Buffer`, `Uint8Array`, or well-formed JavaScript string:
 

@@ -4,6 +4,9 @@
   "private": true,
   "description": "Append-only persistence for canonical Oddo values",
   "type": "module",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
   "scripts": {
     "test": "node --test"
   },

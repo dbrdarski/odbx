@@ -123,22 +123,23 @@ MVP persistent value domain:
 
 ### 4.3 `undefined`
 
-`undefined` is not a separate persistent IDBX value inside Records/Tuples.
+Oddo is a separate language and never produces an `undefined` value. Its native
+Record/Tuple implementation remains unchanged.
 
-Oddo Record/Tuple construction must normalize an encountered `undefined` child to `null` before interning. Therefore:
+JavaScript-facing wrappers are responsible for normalizing host `undefined`
+children to `null` before passing them to the native constructors. A present JS
+property or Tuple element containing `undefined` becomes `null`; an absent field
+remains absent. This belongs to the JavaScript integration helpers deferred in
+§3.2, not to the Oddo runtime or persistence kernel.
 
-```js
-Record({ a: undefined }) === Record({ a: null })
-Tuple(undefined) === Tuple(null)
-```
-
-Field absence remains distinct:
+Native field absence remains distinct from null:
 
 ```js
 Record({}) !== Record({ a: null })
 ```
 
-IDBX therefore needs only the existing `V`/void-like primitive representation for the normalized `null` value; it does not need a second `undefined` token.
+IDBX therefore needs only the existing `V`/void-like primitive representation for
+`null`; `undefined` is not a persistent value and does not get a separate token.
 
 ### 4.4 `-0`
 
@@ -817,7 +818,7 @@ The old `fork()` implementation inherits maps but starts `counter = 0n`; do not 
 - `documentStore` uses numeric Document IDs rather than UUID strings.
 - `recordStore` becomes RevisionStore with numeric Revision IDs.
 - BigInt value handling is removed.
-- `undefined` is expected to have already normalized to null inside canonical Oddo values.
+- Oddo values contain no `undefined`; JavaScript wrappers normalize host `undefined` to null before native construction.
 - `-0` normalization occurs in number encoding.
 - Remove all schema/model/relations hooks from persistence (`initModels`, `selectModel`, `validate`, `createRecord`, `releaseModel`, etc.).
 - Do not mutate committed Document/revision indexes while serializing. Stage those effects until write success.
@@ -1280,7 +1281,7 @@ The implementation agent must not:
 - normalize away archive duplication that exists for convenience;
 - reintroduce published/draft state;
 - reintroduce BigInt as a stored value type;
-- add an `undefined` persistent token; undefined is normalized to null before interning;
+- add an `undefined` persistent token; Oddo never produces it, and JavaScript wrappers normalize host undefined before native construction;
 - add schemas/models/relations/RPC/mutator/plain-JS wrapper to MVP;
 - use WeakMap for the persistent canonical composite -> ID store;
 - advance committed counters before write success;
