@@ -47,7 +47,7 @@ export function createStores() {
   });
   const recordStore = createStore({
     reference: recordReference,
-    serialize: (write, value) => `{${getKey(write, Tuple(...Object.keys(value)))}${getKey(write, Tuple(...Object.values(value)))}}`,
+    serialize: (write, value) => `{${getKey(write, Record.keys(value))}${getKey(write, Record.values(value))}}`,
   });
   const createDocumentStore = type => createStore({
     reference: documentReference(type),

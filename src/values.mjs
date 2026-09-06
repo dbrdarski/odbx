@@ -93,3 +93,11 @@ export const Record = extendFn(function Record(props) {
 
   return canonical(Record, parts, record);
 }, Object)
+
+const cached = (create, cache = new WeakMap()) => value => {
+  let result = cache.get(value)
+  return result ?? (cache.set(value, result = create(value)), result)
+}
+
+Record.keys = cached(record => Tuple(...Object.keys(record)))
+Record.values = cached(record => Tuple(...Object.values(record)))
