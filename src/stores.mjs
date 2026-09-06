@@ -7,7 +7,7 @@ const createCounter = value => ({
   getId: () => value++,
 });
 
-export function createStore({ reference, serialize }, counter = 0n, keys = new Map()) {
+export function createStore({ reference, serialize }, counter = 0, keys = new Map()) {
   const store = {
     counter: createCounter(counter),
     getKey(write, value) {
@@ -52,5 +52,13 @@ export function createStores() {
     serialize: (write, { metadata, data, archived }) =>
       `(${documentReference(type)(documentId)}${getKey(write, metadata)}${getKey(write, data)}${encodePrimitive(archived)})`,
   });
-  return { stringStore, tupleStore, recordStore, createDocumentStore, createRevisionStore, getKey };
+  const documentTypes = Object.create(null);
+  const addDocumentType = name => {
+    if (documentTypes[name]) throw Error(`Duplicate document type: ${name}`);
+    return documentTypes[name] = {
+      documentStore: createDocumentStore(name),
+      createRevisionStore: createRevisionStore(name),
+    };
+  };
+  return { stringStore, tupleStore, recordStore, addDocumentType, getKey };
 }
