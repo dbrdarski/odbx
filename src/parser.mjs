@@ -118,9 +118,9 @@ class Scanner {
     if (!types.includes(type)) this.#fail(`Expected ${types} reference`);
     this.#offset++;
     if (type === 'D') {
+      const id = this.#integer();
       const entity = this.#reference('E');
-      this.#expect(':');
-      return { type, entity, id: this.#integer() };
+      return { type, id, entity };
     }
     return { type, id: this.#integer() };
   }

@@ -54,7 +54,7 @@ export function createStores() {
     serialize: (write, value) => `{${getKey(write, Record.keys(value))}${getKey(write, Record.values(value))}}`,
   });
   const createDocumentStore = name => createStore({
-    reference: (id, write) => `D${entityStore.getKey(write, name)}:${encodeInt(id)}`,
+    reference: (id, write) => `D${encodeInt(id)}${entityStore.getKey(write, name)}`,
     serialize: write => `<${entityStore.getKey(write, name)}>`,
   });
   const createRevisionStore = document => createStore({
