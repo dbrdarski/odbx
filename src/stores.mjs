@@ -1,5 +1,5 @@
 import { encodeInt, encodePrimitive, encodeString } from './codec.mjs';
-import { stringReference, tupleReference, recordReference, entityReference, revisionReference } from './symbols.mjs';
+import { stringReference, tupleReference, recordReference, entityReference } from './symbols.mjs';
 import { Record, Tuple } from './values.mjs';
 
 const createCounter = (value = 0) => ({
@@ -58,7 +58,7 @@ export function createStores() {
     serialize: write => `<${entityStore.getKey(write, name)}>`,
   });
   const createRevisionStore = document => createStore({
-    reference: revisionReference,
+    reference: id => `R${encodeInt(id)}${document}`,
     serialize: (write, { metadata, data, archived }) =>
       `(${document}${getKey(write, metadata)}${getKey(write, data)}${encodePrimitive(archived)})`,
   });

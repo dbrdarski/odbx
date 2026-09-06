@@ -13,9 +13,10 @@ export class ParseError extends SyntaxError {
 
 /**
  * Yield complete entries in physical order without materializing a token array.
- * Value references are { type: 'S' | 'A' | 'O' | 'R', id: bigint }.
+ * Value references are { type: 'S' | 'A' | 'O', id: bigint }.
  * Documents contain { type: 'E', id: bigint } Entity references and use
  * { type: 'D', entity: { type: 'E', id: bigint }, id: bigint } references.
+ * Revision references add an id to their owning Document reference.
  * Offsets are UTF-8 bytes, including for string input. Pass file bytes directly
  * so invalid UTF-8 in a torn suffix cannot be replaced during string decoding.
  *
@@ -121,6 +122,11 @@ class Scanner {
       const id = this.#integer();
       const entity = this.#reference('E');
       return { type, id, entity };
+    }
+    if (type === 'R') {
+      const id = this.#integer();
+      const document = this.#reference('D');
+      return { type, id, document };
     }
     return { type, id: this.#integer() };
   }
