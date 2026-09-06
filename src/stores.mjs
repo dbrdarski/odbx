@@ -2,27 +2,33 @@ import { encodePrimitive, encodeString } from './codec.mjs';
 import { stringReference, tupleReference, recordReference, documentReference, revisionReference } from './symbols.mjs';
 import { Record, Tuple } from './values.mjs';
 
-const createCounter = value => ({
+const createCounter = (value = 0) => ({
   fork: () => createCounter(value),
   getId: () => value++,
 });
 
-export function createStore({ reference, serialize }, counter = 0, keys = new Map()) {
-  const store = {
-    counter: createCounter(counter),
-    getKey(write, value) {
-      const existing = keys.get(value);
-      if (existing != null) return existing;
-      // Serialization discovers children before allocating the parent ID.
-      const definition = serialize(write, value);
-      const key = reference(store.counter.getId());
-      keys.set(value, key);
-      write(definition);
-      return key;
-    },
-  };
-  return store;
-}
+export const createStore = ({ reference, serialize }, counter = createCounter(0), keys = new Map()) => ({
+  transact: () => {
+    const prev = counter
+    counter = counter.fork()
+    return (entries) => {
+      for (const entry of entries) {
+        keys.delete(entry)
+      }
+      counter = prev
+    }
+  },
+  getKey(write, value) {
+    const existing = keys.get(value);
+    if (existing != null) return existing;
+    // Serialization discovers children before allocating the parent ID.
+    const definition = serialize(write, value);
+    const key = reference(counter.getId());
+    keys.set(value, key);
+    write(definition);
+    return key;
+  }
+})
 
 export function createStores() {
   const getKey = (write, value) => {
