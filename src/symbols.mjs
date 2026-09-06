@@ -5,6 +5,5 @@ const reference = type => id => `${type}${encodeInt(id)}`;
 export const stringReference = reference('S');
 export const tupleReference = reference('A');
 export const recordReference = reference('O');
+export const entityReference = reference('E');
 export const revisionReference = reference('R');
-
-export const documentReference = typeId => id => `D${encodeInt(typeId)}:${encodeInt(id)}`;

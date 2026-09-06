@@ -1,5 +1,5 @@
-import { encodePrimitive, encodeString } from './codec.mjs';
-import { stringReference, tupleReference, recordReference, documentReference, revisionReference } from './symbols.mjs';
+import { encodeInt, encodePrimitive, encodeString } from './codec.mjs';
+import { stringReference, tupleReference, recordReference, entityReference, revisionReference } from './symbols.mjs';
 import { Record, Tuple } from './values.mjs';
 
 const createCounter = (value = 0) => ({
@@ -23,7 +23,7 @@ export const createStore = ({ reference, serialize }, counter = createCounter(0)
     if (existing != null) return existing;
     // Serialization discovers children before allocating the parent ID.
     const definition = serialize(write, value);
-    const key = reference(counter.getId());
+    const key = reference(counter.getId(), write);
     keys.set(value, key);
     write(definition);
     return key;
@@ -41,6 +41,10 @@ export function createStores() {
     reference: stringReference,
     serialize: (_, value) => encodeString(value)
   });
+  const entityStore = createStore({
+    reference: entityReference,
+    serialize: (write, name) => `<${stringStore.getKey(write, name)}>`
+  });
   const tupleStore = createStore({
     reference: tupleReference,
     serialize: (write, value) => `[${Array.from(value, child => getKey(write, child)).join('')}]`,
@@ -49,22 +53,22 @@ export function createStores() {
     reference: recordReference,
     serialize: (write, value) => `{${getKey(write, Record.keys(value))}${getKey(write, Record.values(value))}}`,
   });
-  const createDocumentStore = type => createStore({
-    reference: documentReference(type),
-    serialize: (write, document) => `<${getKey(write, document.type)}>`,
+  const createDocumentStore = name => createStore({
+    reference: (id, write) => `D${entityStore.getKey(write, name)}:${encodeInt(id)}`,
+    serialize: write => `<${entityStore.getKey(write, name)}>`,
   });
-  const createRevisionStore = type => documentId => createStore({
+  const createRevisionStore = document => createStore({
     reference: revisionReference,
     serialize: (write, { metadata, data, archived }) =>
-      `(${documentReference(type)(documentId)}${getKey(write, metadata)}${getKey(write, data)}${encodePrimitive(archived)})`,
+      `(${document}${getKey(write, metadata)}${getKey(write, data)}${encodePrimitive(archived)})`,
   });
   const documentTypes = Object.create(null);
   const addDocumentType = name => {
     if (documentTypes[name]) throw Error(`Duplicate document type: ${name}`);
     return documentTypes[name] = {
       documentStore: createDocumentStore(name),
-      createRevisionStore: createRevisionStore(name),
+      createRevisionStore,
     };
   };
-  return { stringStore, tupleStore, recordStore, addDocumentType, getKey };
+  return { stringStore, tupleStore, recordStore, entityStore, addDocumentType, getKey };
 }

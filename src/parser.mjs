@@ -13,8 +13,9 @@ export class ParseError extends SyntaxError {
 
 /**
  * Yield complete entries in physical order without materializing a token array.
- * References are { type: 'S' | 'A' | 'O' | 'R', id: bigint } or
- * { type: 'D', typeId: bigint, id: bigint } for a Document within its type.
+ * Value references are { type: 'S' | 'A' | 'O' | 'R', id: bigint }.
+ * Documents contain { type: 'E', id: bigint } Entity references and use
+ * { type: 'D', entity: { type: 'E', id: bigint }, id: bigint } references.
  * Offsets are UTF-8 bytes, including for string input. Pass file bytes directly
  * so invalid UTF-8 in a torn suffix cannot be replaced during string decoding.
  *
@@ -117,9 +118,9 @@ class Scanner {
     if (!types.includes(type)) this.#fail(`Expected ${types} reference`);
     this.#offset++;
     if (type === 'D') {
-      const typeId = this.#integer();
+      const entity = this.#reference('E');
       this.#expect(':');
-      return { type, typeId, id: this.#integer() };
+      return { type, entity, id: this.#integer() };
     }
     return { type, id: this.#integer() };
   }
@@ -204,11 +205,11 @@ class Scanner {
       }
       case '<': {
         this.#offset++;
-        // Replay numbers Documents within each type and assigns type ordinals
-        // on first appearance. This definition retains the type String reference.
-        const documentType = this.#reference('S');
+        const reference = this.#reference('SE');
         this.#expect('>');
-        entry = { type: 'document', documentType };
+        entry = reference.type === 'S'
+          ? { type: 'entity', name: reference }
+          : { type: 'document', entity: reference };
         break;
       }
       case '(': {
