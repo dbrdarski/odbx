@@ -1,3 +1,5 @@
+import { createQueue } from "./queue.mjs";
+
 export async function commit(stores, persist, discover) {
   const definitions = [], entries = [], restore = stores.map(store => store.transact());
   const write = (definition, value, keys) => {
@@ -13,4 +15,9 @@ export async function commit(stores, persist, discover) {
     for (const rollback of restore) rollback();
     throw error;
   }
+}
+
+export function createCommit(stores, persist) {
+  const enqueue = createQueue();
+  return discover => enqueue(() => commit(stores, persist, discover));
 }
