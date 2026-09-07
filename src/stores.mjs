@@ -3,6 +3,7 @@ import { stringReference, tupleReference, recordReference, documentReference, re
 import { Record, Tuple } from "./values.mjs";
 
 const randomHash = () => crypto.randomUUID();
+const bind = (fn, ...args) => fn.bind(null, ...args)
 
 const createCounter = (value = 0) => ({
   fork: () => createCounter(value),
@@ -13,12 +14,7 @@ export const createStore = ({ reference, serialize }, counter = createCounter(0)
   transact: () => {
     const prev = counter
     counter = counter.fork()
-    return (entries) => {
-      for (const entry of entries) {
-        keys.delete(entry)
-      }
-      counter = prev
-    }
+    return () => counter = prev
   },
   getKey(write, value) {
     const existing = keys.get(value);
@@ -27,7 +23,7 @@ export const createStore = ({ reference, serialize }, counter = createCounter(0)
     const definition = serialize(write, value);
     const key = reference(counter.getId());
     keys.set(value, key);
-    write(definition);
+    write(definition, value, keys);
     return key;
   }
 })
@@ -45,7 +41,7 @@ export function createStores() {
   });
   const tupleStore = createStore({
     reference: tupleReference,
-    serialize: (write, value) => `[${Array.from(value, child => getKey(write, child)).join("")}]`,
+    serialize: (write, value) => `[${Array.from(value, bind(getKey, write)).join("")}]`,
   });
   const recordStore = createStore({
     reference: recordReference,

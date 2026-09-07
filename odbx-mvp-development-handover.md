@@ -360,12 +360,10 @@ Every speculative insertion must be recorded in the transaction rollback
 journal. The journal belongs to transaction orchestration. Stores do not retain
 a transaction-local `entries` collection or any other transaction journal.
 
-The per-store lookup must report whether a call created a mapping and, on a
-miss, identify the inserted value together with its compact reference. The
-transaction-level recursive dispatcher records that miss immediately and
-returns only the compact reference to serializers and callers. Child misses are
-journaled as they happen, so they remain removable if a later parent operation
-throws. This reporting is separate from `write(definition)`.
+On a miss, the store calls `write(definition, value, keys)`. The transaction
+callback appends the definition and immediately records `[keys, value]`. Child
+calls do this before control returns to a parent, so their entries remain
+removable if a later parent operation throws.
 
 ---
 
@@ -381,9 +379,9 @@ getKey(write, value)
 > dependency and queue new definitions before returning the newly allocated
 > compact reference.
 
-`write` is a function with one job: append one serialized definition to the
-transaction output. It is not an object, and stores must not pass rollback
-metadata through extra `write` arguments.
+`write` remains a plain function, not an object. Its exact call is
+`write(definition, value, keys)`: it appends the definition and records
+`[keys, value]` for transaction rollback.
 
 The rewritten algorithm differs in lookup mechanism and transaction safety, not in traversal shape.
 
@@ -393,12 +391,9 @@ For a Tuple/Record miss:
 2. Allocate the provisional numeric ID from the forked counter and encode its
    compact reference string.
 3. Insert canonical-value -> provisional-reference into the store Map.
-4. Report the inserted value and compact reference to the transaction-level
-   dispatcher. It records the value/store in its rollback journal immediately
-   and returns only the reference to the serializer. The store must not own the
-   journal.
-5. Serialize the new definition into the transaction output queue.
-6. Return the provisional compact reference.
+4. Call `write(definition, value, keys)`; the transaction callback queues the
+   definition and immediately records `[keys, value]`.
+5. Return the provisional compact reference.
 
 The queue is naturally child-before-parent.
 
@@ -442,11 +437,10 @@ start file offset
 
 All of this state belongs to transaction orchestration. A store's only
 transaction-local state is its counter fork: start discovery with the fork, keep
-it on success, and restore the previous counter on failure. Because its Map is
-private, the store may delete caller-supplied journal entries during rollback;
-it must not collect or retain that journal itself. In particular, do not place
-`let entries`, a pending Promise, an output array, or publication state inside
-`createStore`.
+it on success, and restore the previous counter on failure. On a miss, the store
+passes its Map to `write` as part of `[keys, value]`; transaction orchestration
+deletes that entry on failure. The store retains no rollback entries, output,
+promise, or publication state.
 
 Do not publish Document/Revision state into committed indexes during discovery.
 
@@ -861,9 +855,9 @@ This section is the primary code-level handover.
 - Transaction discovery may eagerly add speculative canonical-value->reference
   mappings, but transaction orchestration owns the rollback journal. Do not add
   store-local pending entries.
-- A per-store miss reports its inserted value and compact reference. The
-  transaction-level dispatcher journals the miss immediately and exposes only
-  the compact reference to serializers.
+- On a miss, the store passes `definition`, `value`, and `keys` to `write`;
+  transaction orchestration immediately records `[keys, value]` and queues the
+  definition.
 - Generate random Document and Revision IDs before serialization, outside the generic store.
 - Record key/value decomposition uses cached `Record.keys` and `Record.values`
   canonical Tuples.
@@ -1253,8 +1247,8 @@ Implement:
 
 - a transaction-owned output array;
 - a transaction-owned speculative-map rollback journal;
-- immediate journaling of every child and parent miss reported by a store;
-- the one-argument `write(definition)` callback;
+- immediate recording of `[keys, value]` from every store miss;
+- the plain `write(definition, value, keys)` callback;
 - counter forks before discovery;
 - final Revision discovery;
 - keeping forked counters and Map entries on success; and
@@ -1412,8 +1406,8 @@ The implementation agent must not:
 - add reverse `getValue` lookup to the live generic stores; replay may maintain
   temporary ID-to-value tables while rebuilding state;
 - retain rollback entries, output, promises, or publication state inside a store;
-- turn `write` into an object or pass anything other than one serialized
-  definition to it;
+- turn `write` into an object, pass a transaction object to it, or deviate from
+  the exact `write(definition, value, keys)` callback contract;
 - represent live compact references as wrapper objects rather than strings;
 - add or change tests without explicit user permission, or add non-unit tests;
 - advance committed counters before write success;
