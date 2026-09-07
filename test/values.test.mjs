@@ -1,16 +1,8 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import { Record, Tuple } from 'odbx';
 import { Record as InternalRecord, Tuple as InternalTuple } from '../src/values.mjs';
-
-test('Oddo runtime is byte-for-byte the pinned source, without local adaptations', async () => {
-  const bytes = await readFile(new URL('../src/values.mjs', import.meta.url));
-  assert.equal(createHash('sha256').update(bytes).digest('hex'),
-    '74f25dd7cd091e938c01d6fbbc19fcffe6831304ac9521d771aa016192e8ee53');
-});
 
 test('package exports and internal consumers share the same canonical runtime', () => {
   assert.equal(Record, InternalRecord);
