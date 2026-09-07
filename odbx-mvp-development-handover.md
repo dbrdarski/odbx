@@ -1,0 +1,1515 @@
+# odbx — MVP Development Handover
+
+**Status:** Implementation handover, reconciled with implementation decisions
+**Date:** 2026-09-07
+**Target:** Build the odbx persistence kernel while preserving the proven storage ideas of the original IDBX repository.
+**Historical implementation:** https://github.com/dbrdarski/idbx  
+**Oddo value runtime:** https://github.com/dbrdarski/oddo-next
+
+---
+
+## 1. Authority and implementation rule
+
+This document is the implementation handover for the odbx MVP. It includes the
+decisions made during the initial parser, value-runtime, store, Document, and
+Revision implementation slices.
+
+The old IDBX repository is **historical prior art and the primary source for mechanisms that are explicitly marked KEEP or MODIFY below**. It is not copied wholesale. Where this document differs from the old implementation, this document is authoritative.
+
+The implementation agent must **not redesign settled behavior** merely because a different architecture appears cleaner or more conventional. In particular, do not replace the compact format with JSON/JSONL, do not replace value-store counters with content addresses, do not add SQL/SQLite/LevelDB, do not introduce schemas/models/relations into the MVP, and do not add additional transaction framing that has not been requested.
+
+If an old implementation detail is unclear and this document does not resolve it, inspect the old source before inventing a replacement.
+
+Do not add or modify tests without explicit user permission. Approved new tests
+must be unit tests. Functionality belongs in `src`, never in test helpers or
+fixtures. The existing parser unit tests are already approved.
+
+---
+
+## 2. MVP objective
+
+Implement a small, correct, append-only versioned content database whose native values are canonical Oddo Records and Tuples.
+
+The central property is:
+
+> Every revision represents a complete document value, while equal substructures are persisted once and shared across documents and revisions.
+
+Oddo determines live structural identity. odbx assigns and remembers compact
+store reference strings for canonical values.
+
+The MVP must prove:
+
+- canonical structural reuse;
+- compact child-first persistence;
+- random opaque Document/Revision identity;
+- revision history and ancestry;
+- document archive/restore lifecycle;
+- serialized writes;
+- failure rollback;
+- partial-write truncation;
+- deterministic replay to the last complete revision.
+
+---
+
+## 3. Explicit MVP boundary
+
+### 3.1 In scope
+
+- Oddo `Record` and `Tuple` values.
+- String, Tuple, Record, Document, and Revision persistent stores.
+- Compact old-IDBX-style token format.
+- Counter-based persistent store references.
+- Random opaque Document IDs.
+- Random opaque Revision IDs.
+- Document `type`.
+- Revision metadata including `timestamp`, `from`, and archive state as in the old simplified metadata model.
+- Document archive/restore as soft deletion represented through revisions.
+- Recursive discovery of only values not yet persisted.
+- One collected output buffer per save.
+- One serialized write transaction at a time.
+- Forked counters.
+- Speculative persistent-map entries with rollback.
+- One awaited file append per transaction.
+- Last committed byte offset and truncation after partial write failure.
+- Replay/recovery where a complete Revision is the logical commit boundary.
+- Minimal read/version APIs needed for documents and revisions.
+
+### 3.2 Explicitly out of scope
+
+Do not implement any of the following in the MVP:
+
+- recursive plain-JS object/array wrapper;
+- proxy mutator;
+- RPC integration;
+- `JSON.parse(..., reviver)` integration;
+- schemas;
+- models;
+- relations/associations;
+- relation indexes;
+- draft/published workflow;
+- publication model;
+- general lazy query DSL;
+- browser persistence adapter;
+- branching UI/workflow;
+- multi-document transactions;
+- compaction/GC;
+- lazy disk-backed materialization;
+- replication/distributed identity.
+
+The plain-JS recursive constructor and proxy mutator are first in line after the MVP, but they are separate value-layer helpers and must not leak into the storage kernel.
+
+---
+
+## 4. Native value semantics
+
+### 4.1 Oddo owns structural canonicalization
+
+odbx receives values that are already in the Oddo canonical value universe.
+
+Current Oddo semantics:
+
+- Records are canonical unordered mappings: Record key order does not affect identity.
+- Tuples are canonical ordered sequences.
+- Children are expected to already be canonical/primitive when a Record/Tuple is constructed.
+- Structural cycles are not supported by odbx.
+
+odbx must not perform general deep-equality matching for Records/Tuples. Canonical object reference is already the proof of structural identity in the live runtime.
+
+### 4.2 Primitive domain
+
+MVP persistent value domain:
+
+- `null`;
+- Boolean;
+- Number;
+- String;
+- Tuple;
+- Record.
+
+**BigInt is removed**, matching the current Oddo design.
+
+### 4.3 `undefined`
+
+Oddo is a separate language and never produces an `undefined` value. Its
+Record/Tuple construction and canonical identity semantics remain unchanged.
+
+The Oddo source repository remains unchanged. odbx's local runtime copy adds
+cached `Record.keys(record)` and `Record.values(record)` helpers for persistence
+decomposition. Each helper returns a canonical Tuple and calculates it at most
+once per Record. These helpers do not alter Record construction or identity.
+
+JavaScript-facing wrappers are responsible for normalizing host `undefined`
+children to `null` before passing them to the native constructors. A present JS
+property or Tuple element containing `undefined` becomes `null`; an absent field
+remains absent. This belongs to the JavaScript integration helpers deferred in
+§3.2, not to the Oddo runtime or persistence kernel.
+
+Native field absence remains distinct from null:
+
+```js
+Record({}) !== Record({ a: null })
+```
+
+odbx therefore needs only the existing `V`/void-like primitive representation for
+`null`; `undefined` is not a persistent value and does not get a separate token.
+
+### 4.4 `-0`
+
+odbx normalizes `-0` to `+0` before Number encoding:
+
+```js
+if (Object.is(value, -0)) value = 0
+```
+
+This is a persistence normalization only. No larger number-semantic subsystem is required.
+
+### 4.5 NaN
+
+Do not add special NaN canonicalization machinery for the MVP.
+
+Oddo's primitive interning already treats NaN as one key under JavaScript `Map` semantics. odbx is currently a single-server design. Persist NaN through the normal Float64 encoding used by the runtime.
+
+---
+
+## 5. Persistent store set
+
+Preserve the original architecture as five first-class stores, renamed where the semantic role changed:
+
+```text
+StringStore
+TupleStore       // old ArrayStore role
+RecordStore      // old ObjectStore role
+DocumentStore
+RevisionStore    // old recordStore/top-level record role
+```
+
+Documents and Revisions remain stores. Do not collapse them into generic maps or remove their persistent representation.
+
+### 5.1 Store responsibilities
+
+#### StringStore
+
+Stores/deduplicates strings and returns compact String reference strings.
+
+Preserve old behavior conceptually.
+
+#### TupleStore
+
+Stores canonical Oddo Tuples. Persistent lookup is by canonical Tuple object reference.
+
+A hit returns the existing Tuple reference string immediately and terminates
+traversal of that subtree.
+
+A miss recursively ensures its children, then serializes the Tuple definition child-first.
+
+#### RecordStore
+
+Stores canonical Oddo Records. Persistent lookup is by canonical Record object reference.
+
+Preserve the old object decomposition:
+
+```text
+Record
+  -> canonical keys Tuple
+  -> canonical values Tuple
+```
+
+The Record definition references those two Tuples. Use the cached
+`Record.keys(record)` and `Record.values(record)` helpers. Do not reconstruct
+them with `Tuple(...Object.keys(record))` or
+`Tuple(...Object.values(record))` during each write.
+
+Because Oddo Record keys are already canonicalized into deterministic unordered-record order, persistent Record decomposition must use that same order.
+
+#### DocumentStore
+
+Preserve the old first-class Document concept:
+
+```js
+{
+  id,
+  type
+}
+```
+
+`id` is a random opaque string, preserving the old identity mechanism.
+
+Document type remains part of the core Document representation. The removal of schemas/models from the MVP does **not** remove Document type.
+
+#### RevisionStore
+
+This is the renamed semantic role of the old top-level `recordStore`.
+
+A Revision is a historical event, not a structurally deduplicated content value.
+
+A Revision connects:
+
+- its random revision identity;
+- Document reference;
+- metadata Record reference;
+- data root reference;
+- document archive state.
+
+The Revision is the final logical entry of every transaction.
+
+---
+
+## 6. IDs and counters
+
+### 6.1 Documents
+
+Document IDs are random opaque strings generated once when a Document is created:
+
+```text
+crypto.randomUUID()
+```
+
+The compact `D` reference remains a global DocumentStore counter. Resolving it
+returns the Document's random ID and type.
+
+### 6.2 Revisions
+
+Revision IDs are independent random opaque strings generated once per Revision:
+
+```text
+crypto.randomUUID()
+```
+
+The compact `R` reference remains a global RevisionStore counter. The random
+Revision ID is stored in its metadata Record.
+
+### 6.3 Value-store references
+
+Preserve the old counter/reference-store philosophy for
+String/Tuple/Record/Document/Revision stores. Counters are store-local Numbers
+with two operations: `fork()` creates a counter starting at the current value,
+and `getId()` returns the current value and increments it. Do not add global
+counter management, a `nextId` helper, safe-integer checks, or BigInt store
+counters. BigInt remains limited to internal codec arithmetic.
+
+Reference functions immediately encode the numeric counter value into a plain
+string such as `S...`, `A...`, `O...`, `D...`, or `R...`. Store Maps retain that
+complete compact reference string; they do not retain a runtime reference
+wrapper object.
+
+### 6.4 Counter transactionality
+
+Every counter that can advance during a save is forked before transaction discovery begins.
+
+Committed counters are not advanced during speculative discovery.
+
+On success, forked counters replace committed counters.
+
+On failure, forked counters are discarded.
+
+**Invariant:** a failed transaction consumes no counter-based store IDs. Random
+Document/Revision identities may have been generated, but they remain
+unpublished.
+
+---
+
+## 7. Canonical value -> compact reference maps
+
+### 7.1 Use `Map`, not `WeakMap`
+
+For canonical composite values, use ordinary `Map` keyed by canonical Record/Tuple reference.
+
+Conceptually:
+
+```js
+const tupleReferences = new Map()
+const recordReferences = new Map()
+```
+
+The database is append-only and fully resident in the MVP. Persisted values are intentionally retained, so WeakMap lifetime semantics provide no useful benefit.
+
+Persistent stores only need the value -> compact-reference direction. Do not add
+`getValue` or a reverse Map to the live generic store. Replay builds separate,
+ordered ID -> value tables while reconstructing the file.
+
+This ordinary-`Map` requirement applies to persistent value -> reference
+mappings. The private `WeakMap` caches used by `Record.keys` and `Record.values`
+are allowed because they cache derived Tuples and are not persistent stores.
+
+### 7.2 Meaning of a hit
+
+A hit means:
+
+> This canonical value is already persisted in this database.
+
+Therefore:
+
+```text
+Map hit
+-> return existing compact reference string
+-> do not inspect children
+-> emit nothing
+```
+
+This is the primary runtime benefit of integrating Oddo canonical identity with odbx persistence.
+
+### 7.3 Meaning of a miss
+
+A miss starts recursive persistence discovery for that value.
+
+New mappings may be inserted eagerly into the normal persistent Map so the same
+new canonical value encountered later in the current transaction resolves to
+the same provisional compact reference.
+
+Every speculative insertion must be recorded in the transaction rollback
+journal. The journal belongs to transaction orchestration. Stores do not retain
+a transaction-local `entries` collection or any other transaction journal.
+
+The per-store lookup must report whether a call created a mapping and, on a
+miss, identify the inserted value together with its compact reference. The
+transaction-level recursive dispatcher records that miss immediately and
+returns only the compact reference to serializers and callers. Child misses are
+journaled as they happen, so they remain removable if a later parent operation
+throws. This reporting is separate from `write(definition)`.
+
+---
+
+## 8. Recursive discovery and transaction output
+
+Preserve the central old-IDBX get-or-create behavior through the direct call:
+
+```js
+getKey(write, value)
+```
+
+> Return the existing compact reference, or recursively create every missing
+> dependency and queue new definitions before returning the newly allocated
+> compact reference.
+
+`write` is a function with one job: append one serialized definition to the
+transaction output. It is not an object, and stores must not pass rollback
+metadata through extra `write` arguments.
+
+The rewritten algorithm differs in lookup mechanism and transaction safety, not in traversal shape.
+
+For a Tuple/Record miss:
+
+1. Recursively ensure child values.
+2. Allocate the provisional numeric ID from the forked counter and encode its
+   compact reference string.
+3. Insert canonical-value -> provisional-reference into the store Map.
+4. Report the inserted value and compact reference to the transaction-level
+   dispatcher. It records the value/store in its rollback journal immediately
+   and returns only the reference to the serializer. The store must not own the
+   journal.
+5. Serialize the new definition into the transaction output queue.
+6. Return the provisional compact reference.
+
+The queue is naturally child-before-parent.
+
+Example:
+
+```text
+new strings/primitive references
+new child Tuples
+new child Records
+new parent Tuple/Record
+Document definition if required
+revision metadata Record if new
+final Revision
+```
+
+The complete queue is joined/encoded into one transaction payload before file I/O begins.
+
+---
+
+## 9. Write transaction lifecycle
+
+### 9.1 Serialized write queue
+
+At most one write transaction may be in preparation/write/publication/rollback at a time.
+
+The queue covers the **whole transaction**, not merely `adapter.write`.
+
+A later write must never observe speculative IDs/mappings created by an earlier uncommitted write.
+
+### 9.2 Transaction state
+
+A transaction needs at least:
+
+```text
+forked counters
+created/speculative mapping journal
+output definitions
+provisional Document/Revision state
+start file offset
+```
+
+All of this state belongs to transaction orchestration. A store's only
+transaction-local state is its counter fork: start discovery with the fork, keep
+it on success, and restore the previous counter on failure. Because its Map is
+private, the store may delete caller-supplied journal entries during rollback;
+it must not collect or retain that journal itself. In particular, do not place
+`let entries`, a pending Promise, an output array, or publication state inside
+`createStore`.
+
+Do not publish Document/Revision state into committed indexes during discovery.
+
+### 9.3 Success path
+
+After the complete transaction payload has been written successfully:
+
+1. Keep the speculative value->reference Map entries; they are now committed.
+2. Replace committed counters with the transaction counter forks.
+3. Publish the new Document if this was a create.
+4. Publish the Revision.
+5. Update the Document's revision history/latest state/archive state.
+6. Advance `committedEndOffset` by the actual encoded byte length.
+7. Resolve the save promise.
+
+### 9.4 Failure path
+
+If the write rejects:
+
+1. Delete every speculative value->reference Map entry recorded in the rollback journal.
+2. Discard all forked counters.
+3. Publish no new Document.
+4. Publish no Revision.
+5. Leave the committed Document/revision indexes unchanged.
+6. Truncate the file back to the transaction's captured start offset.
+7. Leave `committedEndOffset` unchanged.
+8. Reject the save promise.
+
+If truncation/recovery itself fails, the instance must not continue accepting writes against an unknown physical suffix.
+
+---
+
+## 10. File offset and one-write rule
+
+Maintain:
+
+```js
+let committedEndOffset
+```
+
+This is the byte offset immediately after the last successfully committed transaction and the starting position of the next transaction.
+
+Before a write:
+
+```js
+const startOffset = committedEndOffset
+```
+
+All entries for one revision transaction are written in **one logical adapter write**. The final Revision is not written in a separate call.
+
+On failure, truncate to `startOffset`.
+
+Offsets are byte offsets, not JavaScript UTF-16 string lengths.
+
+---
+
+## 11. Replay and recovery
+
+Preserve the old append/replay model, but make replay transactional.
+
+Replay, rather than the live stores, owns the ordered ID -> value tables needed
+to resolve compact references while loading. These reconstruction tables are
+separate from the stores' value -> compact-reference Maps.
+
+After the last accepted Revision, parsed definitions belong to a provisional replay transaction.
+
+Only when a complete Revision entry parses successfully is that pending group accepted as committed.
+
+At that point:
+
+- accept its store/counter advances;
+- reconstruct/publish its Document and Revision state;
+- update the last committed byte offset to the position after the Revision.
+
+If EOF or malformed trailing data occurs before a complete Revision:
+
+- discard the provisional replay transaction;
+- keep the previously committed stores/counters/indexes;
+- retain the previous committed offset;
+- truncate the incomplete physical suffix before accepting future writes.
+
+No extra checksum, frame-length wrapper, JSONL envelope, or file header is part of the current MVP design.
+
+---
+
+## 12. Compact token format
+
+### 12.1 KEEP the old grammar architecture
+
+Do not redesign the persistent language.
+
+Old grammar roles are preserved:
+
+```text
+"..."   String definition
+[...]   Tuple definition      // old Array definition role
+{...}   Record definition     // old Object definition role
+<...>   Document definition
+(...)   Revision definition   // old top-level record role
+
+S...    String reference
+A...    Tuple reference       // existing A token may remain
+O...    Record reference      // existing O token may remain
+D...    Document reference
+R...    Revision reference
+
+T       true
+F       false
+V       null
+N...    Number
+```
+
+The old BigInt `+...` / `-...` value forms are removed because BigInt is no longer in the value model.
+
+The implementation may keep the historical `A`/`O` token letters even though runtime names are now Tuple/Record. Do not churn the format merely for naming aesthetics.
+
+### 12.2 KEEP child-first implicit counter semantics
+
+Definitions establish store entries in sequence. A typed reference string encodes
+the referenced entry's numeric, repository-local store ID.
+
+### 12.3 MODIFY the parser implementation
+
+Drop the old generic regex tokenizer algorithm that repeatedly searches every regex against the remaining string and materializes a full token array.
+
+Replace it with a deterministic scanner/parser for the same compact grammar.
+
+The parser must:
+
+- dispatch from known leading syntax/token characters;
+- parse sequentially;
+- track byte position;
+- detect malformed/incomplete trailing input; and
+- yield complete syntactic entries in physical order.
+
+The parser is syntax-only. It does not resolve references, reconstruct values,
+own provisional transaction state, perform I/O, or publish Documents and
+Revisions. The replay layer consumes parser entries, reconstructs children before
+parents, holds provisional state between Revision boundaries, and accepts that
+state only when it receives a complete final Revision.
+
+---
+
+## 13. Compact integer/reference encoding
+
+### 13.1 KEEP the old high-radix design
+
+Old IDBX reserves code units `0..255` for syntax and uses the higher UTF-16 region for compact ID digits.
+
+Preserve that idea.
+
+### 13.2 MODIFY only the unsafe digit alphabet
+
+The old range `U+0100..U+FFFF` includes the UTF-16 surrogate block:
+
+```text
+U+D800..U+DFFF
+```
+
+Those code units are not valid standalone Unicode scalar values when the JS string is encoded as UTF-8.
+
+Use two valid physical ranges:
+
+```text
+U+0100..U+D7FF
+U+E000..U+FFFF
+```
+
+The surrogate block is skipped as one contiguous hole.
+
+Logical digit space remains contiguous:
+
+```text
+0..63231
+```
+
+New radix:
+
+```text
+63,232
+```
+
+The digit encoder maps logical digits below the hole directly and adds `0x800` after the hole. The decoder reverses this mapping and rejects surrogate code units.
+
+Do not replace the scheme with base64/base85/varints for the MVP.
+
+---
+
+## 14. Number encoding
+
+### 14.1 KEEP the old model
+
+Preserve:
+
+```text
+Number
+-> IEEE-754 Float64 bits
+-> integer
+-> compact integer encoder
+```
+
+### 14.2 MODIFY `-0`
+
+Normalize:
+
+```text
+-0 -> +0
+```
+
+before extracting Float64 bits.
+
+### 14.3 MODIFY host-layout dependence
+
+The old implementation reinterprets `Float64Array` memory through `Uint32Array`, which depends on host byte layout.
+
+Use an explicit-endian `DataView` implementation for the same 64-bit bit-preserving representation.
+
+BigInt may be used internally by the codec as an implementation type for manipulating 64 bits; this does **not** reintroduce BigInt as an odbx data value.
+
+### 14.4 NaN
+
+Do not add a special NaN canonicalization layer in the MVP. Encode the runtime's normal Float64 NaN representation.
+
+---
+
+## 15. Revision/version model
+
+### 15.1 Revision identity
+
+Revision ID is a random opaque string stored in ordinary revision metadata. The
+RevisionStore counter only supplies its compact repository-local `R` reference.
+
+### 15.2 `from` MUST be preserved
+
+`from` records the ancestor Revision from which the new Revision was created.
+
+It is **not** redundant chronological information.
+
+Example:
+
+```text
+R1 -> R2 -> R3 -> R4
+       \
+        -> R5
+```
+
+If R5 was created by taking R2 and editing/republishing from there:
+
+```text
+R5.from = R2
+```
+
+R5 may be chronologically newer than R4 while still descending from R2.
+
+This lineage is a historical fact and belongs in revision metadata.
+
+### 15.3 Revision metadata
+
+Preserve the old simplification: metadata itself is stored using the ordinary Record/value machinery and the public/in-memory revision can derive/reconstruct fields from the surrounding Revision entry.
+
+MVP metadata retains the old useful concepts:
+
+- `timestamp`;
+- `from`;
+- `archived` where the old metadata representation keeps it for convenience.
+
+`user` is not an MVP feature. The old code hard-coded it and never implemented a real user source.
+
+`published` / draft state is removed from the MVP and should not be recreated in the base model.
+
+### 15.4 Final Revision entry
+
+Preserve the old top-level structure conceptually:
+
+```text
+Revision(
+  DocumentRef,
+  MetadataRecordRef,
+  DataRootRef,
+  ArchivedState
+)
+```
+
+Archive state may also exist in metadata for convenience; do not remove that duplication simply for normalization.
+
+---
+
+## 16. Document model
+
+### 16.1 KEEP old semantic structure
+
+Document remains:
+
+```js
+{
+  id,
+  type
+}
+```
+
+with a random opaque string `id`.
+
+Document type remains core data.
+
+### 16.2 Document creation
+
+A new Document and its first Revision are one persistence transaction.
+
+The new Document must not become visible in committed in-memory state before the transaction write succeeds.
+
+On failure, its provisional counter allocation is discarded and the Document is not published.
+
+---
+
+## 17. Archive semantics
+
+### 17.1 Meaning
+
+`archived` is **Document state**, i.e. document-level soft deletion.
+
+It is recorded in revision data because every Revision preserves what the Document state became at that historical point.
+
+### 17.2 Archive/restore behavior
+
+Archiving or restoring creates another Revision. History is never physically deleted.
+
+An archive-only or restore-only Revision can reuse the exact same data root as the prior Revision.
+
+### 17.3 Preserve metadata duplication
+
+The old implementation duplicates archive information between convenient revision metadata and the top-level Revision data.
+
+This is intentional convenience, not a normalization bug to remove in the MVP.
+
+### 17.4 Filtering
+
+For document-selection/current-document APIs, preserve tri-state archive filtering:
+
+```js
+archived: false // active documents only; normal/default collection view
+archived: true  // archived documents only
+archived: null  // all documents regardless of archive state
+```
+
+Exact historical Revision access must remain possible. Do not make archive soft deletion erase history.
+
+---
+
+## 18. API direction
+
+Do not perform a new API-design project before implementing the persistence MVP.
+
+Preserve the old vocabulary where it still maps cleanly:
+
+```js
+DB.create(...)
+DB.open(...)
+
+db.save(...)
+db.latest(...)
+db.revision(...)
+db.revisions(...)
+```
+
+`save` remains a good name because every modification creates a Revision rather than destructively updating a row.
+
+Archive/restore convenience methods may be thin wrappers over `save` using the existing data root and appropriate archive state/`from` ancestry.
+
+The old general query DSL is not part of the MVP. Basic methods may return direct values/collections rather than recreating `iterable.js`/`query-item.js` machinery.
+
+---
+
+## 19. Read/write scheduling
+
+### Writes
+
+All writes are serialized through one queue covering preparation through publish/rollback.
+
+A rejected transaction must not poison the queue after rollback/truncation completes.
+
+### Reads
+
+Reads expose only committed state.
+
+There is no extra read queue requirement. If a caller needs read-after-write behavior, it awaits `db.save(...)` before reading.
+
+---
+
+# 20. Old repository component migration map
+
+This section is the primary code-level handover.
+
+---
+
+## `src/helpers.js`
+
+### Status: **MODIFY heavily; preserve the store/get-or-create pattern**
+
+### KEEP
+
+- `createStore` / store-local encapsulation concept.
+- the direct `getKey(write, value)` get-or-create operation.
+- Per-store counters.
+- `fork` concept for transactional counter state.
+- `serializeObject` conceptual decomposition into keys and values.
+
+### MODIFY
+
+- Replace old serialized-string/object-property structural matching for Record/Tuple with `Map` keyed by canonical Oddo Record/Tuple reference.
+- Use normal Map-based backing stores where appropriate instead of `Object.create` lookup tables.
+- Forked counters must begin from the committed counter value, not reset to zero.
+- Transaction discovery may eagerly add speculative canonical-value->reference
+  mappings, but transaction orchestration owns the rollback journal. Do not add
+  store-local pending entries.
+- A per-store miss reports its inserted value and compact reference. The
+  transaction-level dispatcher journals the miss immediately and exposes only
+  the compact reference to serializers.
+- Generate random Document and Revision IDs before serialization, outside the generic store.
+- Record key/value decomposition uses cached `Record.keys` and `Record.values`
+  canonical Tuples.
+
+### REMOVE
+
+- The unbounded global collision-tracking Set used by the old ID generator.
+- Prototype-chain store inheritance as a substitute for correct transaction rollback.
+
+### Critical warning
+
+The old `fork()` implementation inherits maps but starts `counter = 0n`; do not copy that behavior.
+Store counters are Numbers, and a fork begins at the current counter value.
+
+---
+
+## `src/stores.js`
+
+### Status: **KEEP architecture; rewrite implementation around Oddo and transactions**
+
+### KEEP
+
+- Separate String / collection / object / Document / top-level Revision store architecture.
+- String interning.
+- Tuple child-first serialization.
+- Record decomposition into keys Tuple + values Tuple.
+- Document `{ id, type }` concept.
+- Final top-level Revision containing Document, metadata, data root, archive state.
+- Generic `matchType`/type-dispatch concept.
+- Replay-layer reconstruction of stores from token definitions/references.
+
+### MODIFY
+
+- `arrayStore` becomes TupleStore semantically.
+- `objectStore` becomes RecordStore semantically.
+- Tuple/Record persistent lookup uses canonical object reference Maps.
+- Records use Oddo's unordered canonical key order.
+- `documentStore` keeps random Document IDs and uses a global compact `D` reference counter.
+- `recordStore` becomes RevisionStore; random Revision IDs live in metadata while `R` remains compact and repository-local.
+- BigInt value handling is removed.
+- Oddo values contain no `undefined`; JavaScript wrappers normalize host `undefined` to null before native construction.
+- `-0` normalization occurs in number encoding.
+- Remove all schema/model/relations hooks from persistence (`initModels`, `selectModel`, `validate`, `createRecord`, `releaseModel`, etc.).
+- Do not mutate committed Document/revision indexes while serializing. Stage those effects until write success.
+
+### REMOVE from MVP
+
+- `initModels` dependency.
+- `$or` dependency.
+- schema validation from save path.
+- relation/model lifecycle calls.
+- publication/draft state.
+
+---
+
+## `src/db.mjs`
+
+### Status: **KEEP repository/create/open/save shape; rewrite transaction control**
+
+### KEEP
+
+- `repository(adapter)` factory concept.
+- `ContentRepository` instance per file.
+- `create` and `open` entry points.
+- `save` constructing one complete output collection before adapter write.
+- replay/load as reconstruction from the append-only file.
+
+### MODIFY
+
+- `save` becomes async and **must await** the adapter write.
+- Add one serialized write queue.
+- Capture `committedEndOffset` before each transaction.
+- Fork counters before discovery.
+- Track speculative Map insertions.
+- Publish Document/Revision state only after awaited write success.
+- On failure: rollback mappings, discard forks, truncate file to transaction start offset, reject.
+- `load` must propagate unrecoverable parse/open errors rather than merely `console.error` them.
+- Replay must commit only through complete Revision boundaries.
+
+### REMOVE from MVP
+
+- `runQuery` integration.
+- schema export.
+- middleware/RPC export.
+- hard-coded `user` metadata.
+- `publish` parameter and published/draft state.
+
+---
+
+## `src/utils.js`
+
+### Status: **KEEP codec core; split/trim unrelated utilities**
+
+### KEEP
+
+- compact integer codec concept.
+- Float64 -> integer -> compact-int encoding concept.
+- small generic helpers only if still used by the persistence kernel.
+
+### MODIFY
+
+- integer digit alphabet skips `U+D800..U+DFFF`, giving radix 63,232.
+- decoder rejects surrogate-code-unit digits.
+- Float64 conversion uses explicit-endian `DataView` rather than host-layout typed-array reinterpretation.
+- normalize `-0` to `+0` before encoding.
+- type dispatch recognizes Oddo Tuple/Record rather than arbitrary Array/Object for native MVP persistence.
+- BigInt as a user-stored value type is removed; BigInt may remain as an internal arithmetic implementation type.
+
+### REMOVE from core/MVP
+
+- DOM/VNode utilities (`getVNodeTree`, `createElement`, `render`).
+- stale experimental utilities not used by persistence.
+- random identity generation from codec utilities; it belongs in Document/Revision assembly.
+
+---
+
+## `src/symbols.js`
+
+### Status: **KEEP typed-reference abstraction; adapt codec/value names**
+
+### KEEP
+
+- Type-specific functions returning compact reference strings.
+- `N`, `S`, `A`, `O`, `D`, `R` token/reference distinction.
+- conversion from numeric store counters to encoded compact reference strings.
+
+### MODIFY
+
+- underlying `encodeInt` uses the safe 63,232 radix mapping.
+- Number encoding uses revised Float64 codec.
+- Tuple/Record reference functions keep the `A`/`O` persistent letters while
+  runtime code refers to TupleStore/RecordStore.
+- BigInt/Integer value-token support is removed from the persistent value domain.
+
+### DO NOT
+
+Do not rename persistent token letters merely to make them spell Tuple/Record unless there is a demonstrated need.
+
+---
+
+## `src/parser/tokenizer.js`
+
+### Status: **REPLACE parser implementation; KEEP grammar**
+
+### KEEP
+
+- token/definition grammar.
+- delimiter meanings.
+- typed references.
+- final Revision entry grammar role.
+
+### REMOVE
+
+- generic regex-search tokenizer algorithm.
+- full token-array materialization as a prerequisite to replay.
+
+### REPLACE WITH
+
+A deterministic sequential parser/scanner that parses the existing compact
+language directly and yields syntactic entries with byte offsets. Reference
+resolution, provisional state, and Revision-boundary acceptance belong to replay,
+not to the parser.
+
+---
+
+## `src/getters.js`
+
+### Status: **SIMPLIFY heavily**
+
+### KEEP
+
+- per-Document revision history.
+- latest Revision pointer/state.
+- current Document archive state.
+- lookup by Document ID and Revision ID.
+- basic `latest`, `revision`, `revisions` concepts.
+
+### MODIFY
+
+- use Map-based indexes rather than old plain-object tables where appropriate.
+- Document/revision state is published only after persistence succeeds.
+- archive document filtering supports `false` / `true` / `null` semantics.
+- exact historical Revision access remains available.
+
+### REMOVE from MVP
+
+- `publications` store/index.
+- `drafts` store/index.
+- published/draft mode switching.
+- query relationship integration.
+- dependency on `iterable.js` and `query-item.js` if basic direct methods suffice.
+
+### Note
+
+The old file contains an incomplete/broken `ids` path in `revisions`; do not preserve incidental bugs while preserving the intended version/history structure.
+
+---
+
+## `src/models.js`
+
+### Status: **REMOVE from MVP**
+
+Do not port.
+
+The module couples getters, schema validation, and relations. Those layers are explicitly deferred.
+
+Document `type` still remains in core despite models being absent.
+
+---
+
+## `src/schema.js`
+
+### Status: **REMOVE from MVP / preserve only as future prior art**
+
+Do not port into the storage kernel.
+
+Schemas may return later as an optional composable layer.
+
+---
+
+## `src/relations.js`
+
+### Status: **REMOVE from MVP / preserve as future prior art**
+
+Do not port.
+
+Important future finding to retain conceptually:
+
+- relation targets can remain ordinary Document IDs inside persisted Records/Tuples;
+- inverse associations can later be derived by an optional layer;
+- no core Ref type is required for the MVP.
+
+---
+
+## `src/query.js`, `src/iterable.js`, `src/query-item.js`
+
+### Status: **REMOVE from MVP**
+
+Do not port the general query DSL.
+
+Implement only the direct document/revision reads necessary for the MVP.
+
+---
+
+## `src/middleware.js`
+
+### Status: **REMOVE from MVP**
+
+RPC/network integration is explicitly deferred.
+
+---
+
+## `src/adapters/ascii.js`
+
+### Status: **KEEP minimal adapter idea; MODIFY for transaction recovery**
+
+### KEEP
+
+- extremely small filesystem abstraction.
+- create/open/append semantics.
+
+### MODIFY
+
+- all async operations are awaited.
+- add truncation by byte offset.
+- expose enough information to maintain/update `committedEndOffset` correctly.
+- write accepts/uses the exact transaction payload built before I/O.
+
+### DO NOT ADD
+
+- database-engine dependencies;
+- SQL;
+- key-value engine;
+- unnecessary adapter framework hierarchy.
+
+---
+
+## Browser adapter / browser development code
+
+### Status: **REMOVE from MVP**
+
+Browser persistence was an early development convenience and is not part of the initial rewrite target.
+
+---
+
+## Package/build metadata
+
+### Status: **CLEAN UP**
+
+- ESM remains appropriate.
+- remove the `fs` npm placeholder dependency; use Node's built-in filesystem modules.
+- keep the current `node --test` test command.
+- do not carry Parcel/browser build dependencies into the core MVP unless a separate development need requires them.
+
+---
+
+# 21. Suggested new MVP source layout
+
+This is a mapping suggestion, not a new architectural layer. Keep it small.
+
+```text
+src/
+  values.mjs         // local Oddo runtime copy + cached Record decomposition helpers
+  db.mjs             // repository instance, queue, transaction orchestration
+  stores.mjs         // String/Tuple/Record/Document/Revision stores
+  codec.mjs          // safe compact integers + Float64 encoding
+  symbols.mjs        // compact reference-string functions
+  parser.mjs         // deterministic syntax-only compact-stream parser
+  replay.mjs         // reference resolution and Revision-boundary recovery
+  getters.mjs        // minimal committed document/revision indexes and reads
+  adapters/
+    file.mjs         // create/open/append/truncate
+```
+
+Replay may remain inside `db.mjs` if that is smaller, but parser and replay are
+separate responsibilities.
+
+Do not reproduce the old module split when a module only existed for a deferred feature.
+
+Tests:
+
+```text
+test/
+  codec.test.mjs
+  stores.test.mjs
+  transaction.test.mjs
+  recovery.test.mjs
+  versioning.test.mjs
+  archive.test.mjs
+```
+
+This test list is a coverage target, not authorization to create tests. Add or
+change tests only with explicit user permission. Any approved new tests must be
+unit tests.
+
+---
+
+# 22. Implementation sequence
+
+## Phase 1 — Parser and codec — implemented
+
+Implemented:
+
+- deterministic sequential syntax parser with byte offsets;
+- malformed and incomplete suffix detection;
+- safe high-radix integer mapping with surrogate hole;
+- encode/decode counter round trips;
+- Float64 encode/decode using explicit endian;
+- `-0 -> 0` persistence normalization;
+- strings and primitive tokens.
+
+The parser does not perform replay or I/O. Do not change the compact grammar
+architecture.
+
+## Phase 2 — Oddo runtime integration — implemented
+
+Implemented:
+
+- canonical Oddo Record and Tuple construction;
+- unchanged canonical identity semantics;
+- cached `Record.keys` and `Record.values` persistence helpers in odbx; and
+- no persistent `undefined` or BigInt value type.
+
+## Phase 3 — Stores and persistent value discovery — implemented
+
+Implemented:
+
+- StringStore;
+- TupleStore;
+- RecordStore;
+- DocumentStore;
+- RevisionStore;
+- canonical-reference Map lookup;
+- child-first recursive discovery;
+- cached Record keys/value Tuple decomposition;
+- Number counters and counter forks;
+- random Document IDs + type;
+- random Revision IDs in metadata;
+- metadata Record persistence;
+- caller-provided `from` metadata persistence;
+- caller-provided timestamp metadata; and
+- archive state in Revisions.
+
+## Phase 4 — Minimal transaction discovery and rollback — next
+
+Implement:
+
+- a transaction-owned output array;
+- a transaction-owned speculative-map rollback journal;
+- immediate journaling of every child and parent miss reported by a store;
+- the one-argument `write(definition)` callback;
+- counter forks before discovery;
+- final Revision discovery;
+- keeping forked counters and Map entries on success; and
+- deleting speculative Map entries and restoring counters on failure.
+
+Do not add a store-local entries journal or turn `write` into an object.
+
+## Phase 5 — Durable serialized write
+
+Implement:
+
+- serialized write queue;
+- one payload per transaction;
+- awaited append;
+- `committedEndOffset`;
+- truncate on partial failure; and
+- expose a success boundary that later committed-state publication can use.
+
+## Phase 6 — Replay and recovery
+
+Consume entries from the existing parser, resolve their references, and rebuild
+values child-first. Hold replay state provisionally and accept it only at a
+complete final Revision.
+
+Recover last committed byte offset.
+
+## Phase 7 — Minimal committed indexes and public API
+
+Implement the old-style direct vocabulary needed by MVP:
+
+- committed Document and Revision indexes/history, staged during discovery and
+  published through the durable-write success boundary only after append;
+- create/open;
+- save;
+- latest;
+- revision;
+- revisions;
+- archive/restore convenience if retained as public helpers.
+
+Do not implement the old query DSL.
+
+---
+
+# 23. Permission-gated correctness cases
+
+These are eventual acceptance requirements. They do not authorize test creation
+or modification. Tests may be added only after explicit user permission, and any
+approved new tests must be unit tests.
+
+## 23.1 Canonical persistence
+
+- same canonical Tuple saved twice -> one Tuple definition;
+- same canonical Record saved twice -> one Record definition;
+- repeated child shared across unrelated documents -> one persistent child;
+- persisted child Map hit prevents descendant traversal;
+- same new child encountered multiple times in one transaction gets one provisional compact reference.
+
+## 23.2 Counter rollback
+
+Inject write failure after complete discovery.
+
+Verify:
+
+- committed counters unchanged;
+- speculative Map entries removed;
+- failed DocumentStore counter ID and its compact reference are reusable;
+- failed RevisionStore counter ID and its compact reference are reusable;
+- failed random identities remain unpublished;
+- retry emits compact references matching replayed store IDs.
+
+## 23.3 Retained failed values
+
+Caller retains the canonical Record/Tuple used by a failed transaction.
+
+Verify retry does **not** hit an incorrect stale compact reference. This proves rollback does not depend on GC/WeakMap behavior.
+
+## 23.4 Partial write
+
+Inject failure after writing arbitrary byte prefixes of a complete transaction payload.
+
+Verify:
+
+- save rejects;
+- memory rolls back;
+- file truncates to prior `committedEndOffset`;
+- next transaction succeeds with correct compact references.
+
+## 23.5 Replay boundaries
+
+Truncate a valid file at many positions between one Revision and the next.
+
+Verify only complete Revisions become committed after reopen.
+
+## 23.6 Revision ancestry
+
+Create R1 -> R2 -> R3, then create R4 from R1.
+
+Verify:
+
+- R4 is chronologically latest;
+- `R4.from === R1.id`;
+- R2/R3 remain in history;
+- ancestry is not inferred merely from chronological order.
+
+## 23.7 Archive
+
+- archive creates a new Revision;
+- archive-only revision can reuse same data root;
+- current Document archived state updates only after successful write;
+- failed archive leaves current state unchanged;
+- restore creates a later Revision;
+- `archived: false`, `true`, and `null` select active, archived, and all documents respectively;
+- historical revisions remain accessible.
+
+## 23.8 Number codec
+
+- normal finite numbers round trip;
+- infinities round trip if supported by current Number codec;
+- `-0` persists/reloads as `+0`;
+- NaN round trips as NaN;
+- codec round trips on the target Node runtime.
+
+## 23.9 Integer codec
+
+Test around all important boundaries:
+
+- 0;
+- 255/256 syntax boundary is irrelevant to logical digit space but verify generated physical code units start at U+0100;
+- final digit before surrogate hole maps to U+D7FF;
+- next digit maps to U+E000;
+- no encoder output ever contains U+D800..U+DFFF;
+- maximum one-digit logical value;
+- multi-digit counter IDs across radix boundaries.
+
+---
+
+# 24. Explicit implementation prohibitions
+
+The implementation agent must not:
+
+- replace the compact format with JSON or JSONL;
+- add checksums/frame lengths/file headers without a newly approved requirement;
+- add SQLite/LevelDB/another database engine;
+- introduce content-derived addresses for value stores;
+- remove DocumentStore;
+- remove Document `type`;
+- remove RevisionStore;
+- drop `from` ancestry;
+- normalize away archive duplication that exists for convenience;
+- reintroduce published/draft state;
+- reintroduce BigInt as a stored value type;
+- add an `undefined` persistent token; Oddo never produces it, and JavaScript wrappers normalize host undefined before native construction;
+- add schemas/models/relations/RPC/mutator/plain-JS wrapper to MVP;
+- use WeakMap for the persistent canonical composite -> reference store;
+- add reverse `getValue` lookup to the live generic stores; replay may maintain
+  temporary ID-to-value tables while rebuilding state;
+- retain rollback entries, output, promises, or publication state inside a store;
+- turn `write` into an object or pass anything other than one serialized
+  definition to it;
+- represent live compact references as wrapper objects rather than strings;
+- add or change tests without explicit user permission, or add non-unit tests;
+- advance committed counters before write success;
+- publish Documents/Revisions before write success;
+- let an unawaited adapter write escape from `save`;
+- continue writes after truncation/recovery failure.
+
+---
+
+# 25. Architectural invariants
+
+The implementation is correct only if all of these remain true.
+
+1. Oddo canonical identity defines live Record/Tuple equality.
+2. One committed canonical Record/Tuple has one compact reference string per store/database instance.
+3. A committed persistent Map hit ends traversal of that subtree.
+4. New definitions are emitted child-before-parent.
+5. Revisions are the final logical transaction entries.
+6. Document and Revision IDs are random opaque identities; `D` and `R` remain compact repository-local counter references.
+7. Document `type` remains persisted.
+8. `from` records actual ancestor Revision, not merely chronological predecessor.
+9. Archive is Document state preserved historically through Revisions.
+10. A failed transaction consumes no counter-based store IDs; generated random identities remain unpublished.
+11. A failed transaction leaves no speculative Map mappings.
+12. A failed transaction publishes no Document/Revision state.
+13. A failed partial file append is truncated to the prior committed byte offset.
+14. Replay accepts no transaction lacking a complete final Revision.
+15. At most one write transaction is active at a time.
+16. Reads expose committed state only.
+17. The old compact grammar architecture remains the persistent format.
+18. The parser yields syntax and byte offsets only; replay resolves and publishes state.
+19. Stores retain only counter forks as transaction-local state; transaction orchestration owns rollback journals and output.
+20. Live compact references are strings, not wrapper objects.
+
+---
+
+# 26. Historical source guide
+
+Use these old files as implementation references, subject to the KEEP/MODIFY/REMOVE rules above:
+
+- `src/helpers.js` — store/get-or-create mechanism and old fork concept.
+- `src/stores.js` — String/Array/Object/Document/top-level Record stores; child-first serialization; metadata/data/document assembly.
+- `src/db.mjs` — one-output-array save shape and create/open lifecycle; also contains the unawaited-write bug to fix.
+- `src/utils.js` — compact integer and Float64 codecs.
+- `src/symbols.js` — functions that produce typed compact reference strings.
+- `src/parser/tokenizer.js` — authoritative old token grammar, but **not** the parser architecture to copy.
+- `src/getters.js` — old Document/revision/history/archive bookkeeping; strip publication/draft/query complexity.
+- `src/schema.js`, `src/models.js`, `src/relations.js` — deferred-layer prior art only; do not port to MVP.
+- `src/query.js`, `src/iterable.js`, `src/query-item.js` — old query DSL; do not port to MVP.
+- `src/adapters/ascii.js` — minimal filesystem adapter idea; add awaited writes/truncate.
+
+---
+
+# 27. Final implementation summary
+
+The rewrite is **not a new database design**.
+
+It is a disciplined rewrite of the strongest original IDBX persistence ideas around the new Oddo canonical value runtime:
+
+```text
+Oddo canonical Record/Tuple
+        |
+        v
+persistent Map lookup
+  hit --------> reuse compact reference, stop
+  miss
+        |
+        v
+recursive child-first discovery
+        |
+        v
+provisional references from forked counters
+        |
+        v
+speculative Map entries + transaction-owned rollback journal
+        |
+        v
+compact old-IDBX-style definitions
+        |
+        v
+Document / metadata / data
+        |
+        v
+final Revision
+        |
+        v
+one awaited append
+     /       \
+ success     failure
+   |           |
+keep maps    delete speculative maps
+publish      discard counter forks
+counters     publish nothing
+doc/rev      truncate file
+advance      reject
+file offset
+```
+
+Everything above this kernel—plain-JS conversion, proxy mutation, RPC, schemas, relations, models, publication—is deliberately deferred.
