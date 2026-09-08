@@ -6,9 +6,10 @@ import { documentReference, revisionReference } from '../src/symbols.mjs';
 
 const ref = (type, id) => `${type}${encodeInt(id)}`;
 const reference = (type, id) => ({ type, id: BigInt(id) });
+const primitive = value => ({ type: 'primitive', value });
 const revision = (dataType = 'O', archived = false, documentId = 1) =>
   `(${ref('D', documentId)}${ref('O', 0)}${ref(dataType, 0)}${archived ? 'T' : 'F'})`;
-const values = input => [...parse(input)].map(({ startOffset, endOffset, ...entry }) => entry);
+const values = input => [...parse(input)].map(({ endOffset, ...entry }) => entry);
 
 function failure(input, incomplete = false) {
   assert.throws(() => [...parse(input)], error => {
@@ -20,7 +21,7 @@ function failure(input, incomplete = false) {
   });
 }
 
-test('all definition forms parse in sequence with byte-accurate extents', () => {
+test('all definition forms parse in sequence and only Revisions expose their end offset', () => {
   const text = 'Oddo é 😀';
   const definitions = [
     encodeString(text),
@@ -31,19 +32,15 @@ test('all definition forms parse in sequence with byte-accurate extents', () => 
   ];
   assert.deepEqual(values(definitions.join('')), [
     { type: 'string', value: text },
-    { type: 'tuple', values: [reference('S', 0), true, false, null, 1.5] },
+    { type: 'tuple', values: [reference('S', 0), primitive(true), primitive(false), primitive(null), primitive(1.5)] },
     { type: 'record', keys: reference('A', 0), values: reference('A', 1) },
     { type: 'document', id: reference('S', 0), documentType: reference('S', 1) },
     { type: 'revision', document: reference('D', 1), metadata: reference('O', 0),
-      data: reference('O', 0), archived: false },
+      data: reference('O', 0), archived: primitive(false) },
   ]);
-  let offset = 0;
   const entries = [...parse(Buffer.from(definitions.join('')))];
-  for (let i = 0; i < entries.length; i++) {
-    assert.equal(entries[i].startOffset, offset);
-    offset += Buffer.byteLength(definitions[i]);
-    assert.equal(entries[i].endOffset, offset);
-  }
+  assert.deepEqual(entries.map(entry => entry.endOffset), [undefined, undefined, undefined, undefined,
+    Buffer.byteLength(definitions.join(''))]);
 });
 
 test('empty input, empty definitions and historical standalone basic tokens', () => {
@@ -94,7 +91,7 @@ test('Revision supports Record and Tuple data roots and both archive states', ()
     for (const archived of [true, false]) {
       const [entry] = parse(revision(dataType, archived));
       assert.equal(entry.data.type, dataType);
-      assert.equal(entry.archived, archived);
+      assert.deepEqual(entry.archived, primitive(archived));
     }
   }
 });
@@ -120,10 +117,7 @@ test('all control characters are encoded and decoded without altering content', 
 test('Number values include finite extremes, infinities and NaN', () => {
   const numbers = [0, -0, 1, -1, 0.1, Math.PI, Number.MIN_VALUE, Number.MAX_VALUE, Infinity, -Infinity, NaN];
   const [entry] = parse(`[${numbers.map(encodePrimitive).join('')}]`);
-  entry.values.forEach((value, i) => {
-    if (Number.isNaN(numbers[i])) assert.ok(Number.isNaN(value));
-    else assert.equal(value, Object.is(numbers[i], -0) ? 0 : numbers[i]);
-  });
+  assert.deepEqual(entry.values, numbers.map(value => primitive(Object.is(value, -0) ? 0 : value)));
   failure(`[N${encodeInt(1n << 64n)}]`);
 });
 
@@ -201,7 +195,7 @@ test('input is consumed lazily and complete entries survive a malformed suffix',
 
 test('Buffer slices and Uint8Array views respect their own byte offsets and lengths', () => {
   const bytes = Buffer.from('garbage[TFV]garbage');
-  const expected = [{ type: 'tuple', values: [true, false, null], startOffset: 0, endOffset: 5 }];
+  const expected = [{ type: 'tuple', values: [primitive(true), primitive(false), primitive(null)] }];
   assert.deepEqual([...parse(bytes.subarray(7, 12))], expected);
   assert.deepEqual([...parse(new Uint8Array(bytes.buffer, bytes.byteOffset + 7, 5))], expected);
 });
@@ -222,6 +216,7 @@ test('every byte truncation yields only completed entries and complete Revision 
   ];
   const bytes = Buffer.from(definitions.join(''));
   const complete = [...parse(bytes)];
+  const endOffsets = definitions.map((_, index) => Buffer.byteLength(definitions.slice(0, index + 1).join('')));
   for (let cut = 0; cut <= bytes.length; cut++) {
     const actual = [];
     try {
@@ -231,7 +226,7 @@ test('every byte truncation yields only completed entries and complete Revision 
       assert.equal(error.incomplete, true, `cut ${cut}`);
       assert.equal(error.offset, cut, `cut ${cut}`);
     }
-    const expected = complete.filter(entry => entry.endOffset <= cut);
+    const expected = complete.filter((_, index) => endOffsets[index] <= cut);
     assert.deepEqual(actual, expected, `cut ${cut}`);
     const boundaries = actual.filter(entry => entry.type === 'revision').map(entry => entry.endOffset);
     assert.deepEqual(boundaries, complete.filter(entry => entry.type === 'revision' && entry.endOffset <= cut)

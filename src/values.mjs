@@ -99,5 +99,13 @@ const cached = (create, cache = new WeakMap()) => value => {
   return result ?? (cache.set(value, result = create(value)), result)
 }
 
-Record.keys = cached(record => Tuple(...Object.keys(record)))
-Record.values = cached(record => Tuple(...Object.values(record)))
+const recordKeys = new WeakMap(), recordValues = new WeakMap()
+
+Record.keys = cached(record => Tuple(...Object.keys(record)), recordKeys)
+Record.values = cached(record => Tuple(...Object.values(record)), recordValues)
+Record.from = (shape, values) => {
+  const record = Record(Object.fromEntries(Array.from(shape, (key, index) => [key, values[index]])))
+  recordKeys.set(record, shape)
+  recordValues.set(record, values)
+  return record
+}

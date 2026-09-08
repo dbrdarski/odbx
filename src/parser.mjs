@@ -15,8 +15,9 @@ export class ParseError extends SyntaxError {
  * Yield complete entries in physical order without materializing a token array.
  * References are { type: 'S' | 'A' | 'O' | 'D' | 'R', id: bigint }.
  * Documents contain String references for their identity and type.
- * Offsets are UTF-8 bytes, including for string input. Pass file bytes directly
- * so invalid UTF-8 in a torn suffix cannot be replaced during string decoding.
+ * Revision end offsets are UTF-8 bytes, including for string input. Pass file
+ * bytes directly so invalid UTF-8 in a torn suffix cannot be replaced during
+ * string decoding.
  *
  * Entries are provisional: the replay layer must resolve references and commit
  * stores/indexes only after accepting a complete Revision. This parser does no I/O.
@@ -123,7 +124,7 @@ class Scanner {
     const token = this.#peek();
     if (token !== 'T' && token !== 'F') this.#fail('Expected Boolean');
     this.#offset++;
-    return token === 'T';
+    return { type: 'primitive', value: token === 'T' };
   }
 
   #value() {
@@ -131,13 +132,13 @@ class Scanner {
     if (token === 'T' || token === 'F') return this.#boolean();
     if (token === 'V') {
       this.#offset++;
-      return null;
+      return { type: 'primitive', value: null };
     }
     if (token === 'N') {
       const start = this.#offset++;
       const bits = this.#integer();
       if (bits > 0xffff_ffff_ffff_ffffn) this.#fail('Float64 payload exceeds 64 bits', start);
-      return intToFloat(bits);
+      return { type: 'primitive', value: intToFloat(bits) };
     }
     if ('SAODR'.includes(token)) return this.#reference();
     this.#fail('Expected primitive or typed reference');
@@ -218,11 +219,11 @@ class Scanner {
       case 'T':
       case 'F':
       case 'V':
-        entry = { type: 'primitive', value: this.#value() };
+        entry = this.#value();
         break;
       default:
         this.#fail('Expected store definition or primitive');
     }
-    return { ...entry, startOffset: this.#entryOffset, endOffset: this.#offset };
+    return entry.type === 'revision' ? { ...entry, endOffset: this.#offset } : entry;
   }
 }
