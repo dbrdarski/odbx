@@ -86,14 +86,13 @@ test('every physical digit is accepted by the byte scanner', () => {
   entry.values.forEach((value, id) => assert.deepEqual(value, reference('S', id)));
 });
 
-test('Revision supports Record and Tuple data roots and both archive states', () => {
-  for (const dataType of ['A', 'O']) {
-    for (const archived of [true, false]) {
-      const [entry] = parse(revision(dataType, archived));
-      assert.equal(entry.data.type, dataType);
-      assert.deepEqual(entry.archived, primitive(archived));
-    }
+test('Revision requires a Record data root and supports both archive states', () => {
+  for (const archived of [true, false]) {
+    const [entry] = parse(revision('O', archived));
+    assert.equal(entry.data.type, 'O');
+    assert.deepEqual(entry.archived, primitive(archived));
   }
+  failure(revision('A'));
 });
 
 test('string escaping, Unicode and lone surrogates round trip as string content', () => {
@@ -212,7 +211,7 @@ test('every byte truncation yields only completed entries and complete Revision 
   const definitions = [
     '"type"', '"document-hash"', '<S\u0101S\u0100>', '[]', '{A\u0100A\u0100}', revision(),
     encodeString('é 😀 \\ "\n'), `[S${encodeInt(55_040)}N${encodeFloat(Math.PI)}]`,
-    '{A\u0100A\u0101}', revision('A', true, 63_232), '"uncommitted definition"',
+    '{A\u0100A\u0101}', revision('O', true, 63_232), '"uncommitted definition"',
   ];
   const bytes = Buffer.from(definitions.join(''));
   const complete = [...parse(bytes)];

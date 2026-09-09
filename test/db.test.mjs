@@ -3,7 +3,7 @@ import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DB, Record } from "../src/index.mjs";
+import { DB, Record, Tuple } from "../src/index.mjs";
 import { parse } from "../src/parser.mjs";
 
 const ids = revisions => revisions.map(({ id }) => id).sort();
@@ -14,6 +14,7 @@ test("create, save and reopen a document", async t => {
   const created = await DB.create(filename);
 
   const document = created.addDocumentType("post").createDocument();
+  assert.throws(() => created.save(document, { metadata: {}, data: Tuple() }), /Document data must be a Record/);
   const firstData = Record({ title: "Hello" });
   const firstRevision = await created.save(document, {
     metadata: { timestamp: 1 },

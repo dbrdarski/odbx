@@ -69,6 +69,7 @@ export function createStores() {
     };
   };
   const createRevision = (document, { metadata, data, archived = false }) => {
+    if (!(data instanceof Record)) throw new TypeError("Document data must be a Record");
     const id = randomHash();
     return { id, document, metadata: Record({ ...metadata, id, archived }), data, archived };
   };

@@ -210,7 +210,7 @@ class Scanner {
         this.#offset++;
         const document = this.#reference('D');
         const metadata = this.#reference('O');
-        const data = this.#reference('AO');
+        const data = this.#reference('O');
         const archived = this.#boolean();
         this.#expect(')');
         entry = { type: 'revision', document, metadata, data, archived };
