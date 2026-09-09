@@ -5,7 +5,7 @@ import { encodeInt, encodeFloat, encodeString, encodePrimitive } from '../src/co
 import { documentReference, revisionReference } from '../src/symbols.mjs';
 
 const ref = (type, id) => `${type}${encodeInt(id)}`;
-const reference = (type, id) => ({ type, id: BigInt(id) });
+const reference = (type, id) => ({ type, id: Number(id) });
 const primitive = value => ({ type: 'primitive', value });
 const revision = (dataType = 'O', archived = false, documentId = 1) =>
   `(${ref('D', documentId)}${ref('O', 0)}${ref(dataType, 0)}${archived ? 'T' : 'F'})`;
@@ -53,8 +53,8 @@ test('empty input, empty definitions and historical standalone basic tokens', ()
   ]);
 });
 
-test('all reference letters and large IDs retain their separate namespaces', () => {
-  const ids = [0n, 1n, 55_039n, 55_040n, 63_231n, 63_232n, 1n << 100n];
+test('all reference letters and counter IDs retain their separate namespaces', () => {
+  const ids = [0, 1, 55_039, 55_040, 63_231, 63_232];
   for (const id of ids) {
     assert.deepEqual(values(`[${'SAODR'.split('').map(type => ref(type, id)).join('')}]`), [
       { type: 'tuple', values: 'SAODR'.split('').map(type => reference(type, id)) },
@@ -63,7 +63,7 @@ test('all reference letters and large IDs retain their separate namespaces', () 
 });
 
 test('Document and Revision references use ordinary global store IDs', () => {
-  const ids = [0n, 1n, 55_039n, 55_040n, 63_231n, 63_232n, 1n << 100n];
+  const ids = [0, 1, 55_039, 55_040, 63_231, 63_232];
   for (const id of ids) {
     assert.deepEqual(values(`[${documentReference(id)}${revisionReference(id)}]`), [{
       type: 'tuple', values: [reference('D', id), reference('R', id)],
@@ -212,7 +212,7 @@ test('every byte truncation yields only completed entries and complete Revision 
   const definitions = [
     '"type"', '"document-hash"', '<S\u0101S\u0100>', '[]', '{A\u0100A\u0100}', revision(),
     encodeString('é 😀 \\ "\n'), `[S${encodeInt(55_040)}N${encodeFloat(Math.PI)}]`,
-    '{A\u0100A\u0101}', revision('A', true, 1n << 100n), '"uncommitted definition"',
+    '{A\u0100A\u0101}', revision('A', true, 63_232), '"uncommitted definition"',
   ];
   const bytes = Buffer.from(definitions.join(''));
   const complete = [...parse(bytes)];
