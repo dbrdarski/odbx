@@ -13,7 +13,7 @@ export class ParseError extends SyntaxError {
 
 /**
  * Yield complete entries in physical order without materializing a token array.
- * References are { type: 'S' | 'A' | 'O' | 'D' | 'R', id: bigint }.
+ * References are { type: 'S' | 'A' | 'O' | 'D' | 'R', id: number }.
  * Documents contain String references for their identity and type.
  * Revision end offsets are UTF-8 bytes, including for string input. Pass file
  * bytes directly so invalid UTF-8 in a torn suffix cannot be replaced during
@@ -117,7 +117,7 @@ class Scanner {
     const type = this.#peek();
     if (!types.includes(type)) this.#fail(`Expected ${types} reference`);
     this.#offset++;
-    return { type, id: this.#integer() };
+    return { type, id: Number(this.#integer()) };
   }
 
   #boolean() {
