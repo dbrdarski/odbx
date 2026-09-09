@@ -73,7 +73,7 @@ export function createStores() {
     return { id, document, metadata: Record({ ...metadata, id, archived }), data, archived };
   };
 
-  const matchTokens = tokens => {
+  const matchTokens = (tokens, publish) => {
     const match = {
       string: createMatch(),
       tuple: createMatch(),
@@ -81,7 +81,10 @@ export function createStores() {
       document: createMatch(),
       revision: createMatch(),
     }
-    for (const token of tokens) matchToken(match)(token)
+    for (const token of tokens) {
+      const value = matchToken(match)(token)
+      if (token.type === "revision") publish(value)
+    }
   }
   const matchToken = match => token => {
     switch (token.type) {
@@ -103,13 +106,15 @@ export function createStores() {
       }));
       case "revision": {
         const metadata = matchToken(match)(token.metadata)
-        return void revisionStore.getKey(match.revision.write, {
+        const revision = {
           id: metadata.id,
           document: matchToken(match)(token.document),
           metadata,
           data: matchToken(match)(token.data),
           archived: matchToken(match)(token.archived),
-        });
+        }
+        revisionStore.getKey(match.revision.write, revision);
+        return revision;
       }
     }
   }
