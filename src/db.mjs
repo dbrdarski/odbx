@@ -13,7 +13,11 @@ const createDatabase = async (file, bytes) => {
     revisionsById.set(revision.id, revision);
     return revision;
   };
-  const latest = document => getRevisions(document).at(-1);
+  const latest = options => options?.id
+    ? getRevisions(options).at(-1)
+    : Array.from(histories.values(), revisions => revisions.at(-1)).filter(
+      revision => options?.archived === null || revision.archived === (options?.archived ?? false),
+    );
   const endOffset = bytes ? replay(stores, bytes, publish) : 0;
   if (bytes?.length > endOffset) await file.truncate(endOffset);
   const write = createWriter(stores, file, endOffset);
