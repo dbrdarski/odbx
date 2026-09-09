@@ -15,6 +15,19 @@ const createDatabase = async (file, bytes) => {
     revisionsById.set(revision.id, revision);
     return revision;
   };
+  const latest = document => getRevisions(document).at(-1);
+  const save = (document, options) => {
+    const revision = stores.createRevision(document, options);
+    return write(revision).then(() => publish(revision));
+  };
+  const setArchived = (document, metadata, archived) => {
+    const revision = latest(document);
+    return save(document, {
+      metadata: { ...metadata, from: revision.id },
+      data: revision.data,
+      archived,
+    });
+  };
   if (bytes) {
     const endOffset = replay(stores, bytes, publish);
     if (endOffset < bytes.length) await file.truncate(endOffset);
@@ -22,11 +35,10 @@ const createDatabase = async (file, bytes) => {
 
   return {
     addDocumentType: stores.addDocumentType,
-    save(document, options) {
-      const revision = stores.createRevision(document, options);
-      return write(revision).then(() => publish(revision));
-    },
-    latest: document => getRevisions(document).at(-1),
+    save,
+    archive: (document, metadata) => setArchived(document, metadata, true),
+    restore: (document, metadata) => setArchived(document, metadata, false),
+    latest,
     revision: id => revisionsById.get(id),
     revisions: getRevisions,
     close: () => file.close(),
