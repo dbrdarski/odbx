@@ -50,6 +50,11 @@ export const DB = {
   create: async filename => createDatabase(await open(filename, "wx+")),
   open: async filename => {
     const file = await open(filename, "r+");
-    return createDatabase(file, await file.readFile());
+    try {
+      return await createDatabase(file, await file.readFile());
+    } catch (error) {
+      await file.close();
+      throw error;
+    }
   },
 };
