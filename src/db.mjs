@@ -1,9 +1,10 @@
+import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { replay } from "./replay.mjs";
 import { createStores } from "./stores.mjs";
 import { createWriter } from "./writer.mjs";
 
-const createDatabase = (file, bytes) => {
+const createDatabase = async (file, bytes) => {
   const stores = createStores();
   const write = createWriter(stores, file);
   const histories = new Map();
@@ -14,7 +15,10 @@ const createDatabase = (file, bytes) => {
     revisionsById.set(revision.id, revision);
     return revision;
   };
-  if (bytes) replay(stores, bytes, publish);
+  if (bytes) {
+    const endOffset = replay(stores, bytes, publish);
+    if (endOffset < bytes.length) await file.truncate(endOffset);
+  }
 
   return {
     addDocumentType: stores.addDocumentType,
@@ -32,7 +36,7 @@ const createDatabase = (file, bytes) => {
 export const DB = {
   create: async filename => createDatabase(await open(filename, "wx+")),
   open: async filename => {
-    const file = await open(filename, "r+");
+    const file = await open(filename, constants.O_RDWR | constants.O_APPEND);
     return createDatabase(file, await file.readFile());
   },
 };
