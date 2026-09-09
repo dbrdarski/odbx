@@ -48,13 +48,9 @@ const createDatabase = async (file, bytes) => {
 
 export const DB = {
   create: async filename => createDatabase(await open(filename, "wx+")),
-  open: async filename => {
-    const file = await open(filename, "r+");
-    try {
-      return await createDatabase(file, await file.readFile());
-    } catch (error) {
-      await file.close();
-      throw error;
-    }
-  },
+  open: filename => open(filename, "r+").then(file =>
+    file.readFile()
+      .then(bytes => createDatabase(file, bytes))
+      .catch(error => file.close().then(() => Promise.reject(error))),
+  ),
 };
