@@ -68,6 +68,10 @@ test("archive filtering and restore survive reopening", async t => {
   );
   const archive = posts.archive(archivedDocumentId);
   const [edited, archived] = await Promise.all([edit, archive]);
+  await assert.rejects(
+    posts.update(archivedDocumentId, Record({ title: "Rejected" }), { from: archived.id }),
+    /Cannot update archived document/,
+  );
   const restoredInitial = await posts.create(Record({ title: "Restored" }));
   const restoredDocumentId = restoredInitial.document.id;
   const archiving = posts.archive(restoredDocumentId);

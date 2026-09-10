@@ -34,8 +34,11 @@ const createDatabase = async (file, bytes) => {
     const { createDocument } = stores.addDocumentType(name);
     return {
       create: data => save(() => stores.createRevision(createDocument(), { data })),
-      update: (id, data, { from }) => save(() =>
-        stores.createRevision(latest({ id }).document, { data, from })),
+      update: (id, data, { from }) => save(() => {
+        const revision = latest({ id });
+        if (revision.archived) throw Error("Cannot update archived document");
+        return stores.createRevision(revision.document, { data, from });
+      }),
       archive: id => setArchived(id, true),
       restore: id => setArchived(id, false),
     };
