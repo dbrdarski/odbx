@@ -1,8 +1,8 @@
 # odbx — MVP Development Handover
 
-**Status:** Implementation handover, reconciled with implementation decisions
-**Date:** 2026-09-07
-**Target:** Build the odbx persistence kernel while preserving the proven storage ideas of the original IDBX repository.
+**Status:** MVP implemented; reconciled design and API record
+**Date:** 2026-09-10
+**Target:** Preserve the proven storage ideas of the original IDBX repository in the implemented odbx persistence kernel.
 **Historical implementation:** https://github.com/dbrdarski/idbx  
 **Oddo value runtime:** https://github.com/dbrdarski/oddo-next
 
@@ -10,9 +10,9 @@
 
 ## 1. Authority and implementation rule
 
-This document is the implementation handover for the odbx MVP. It includes the
-decisions made during the initial parser, value-runtime, store, Document, and
-Revision implementation slices.
+This document records the implemented odbx MVP and the decisions made during
+the parser, value-runtime, store, Document, Revision, transaction, replay, and
+public API slices.
 
 The old IDBX repository is **historical prior art and the primary source for mechanisms that are explicitly marked KEEP or MODIFY below**. It is not copied wholesale. Where this document differs from the old implementation, this document is authoritative.
 
@@ -28,7 +28,8 @@ fixtures. The existing parser unit tests are already approved.
 
 ## 2. MVP objective
 
-Implement a small, correct, append-only versioned content database whose native values are canonical Oddo Records and Tuples.
+The MVP is a small, correct, append-only versioned content database whose native
+values are canonical Oddo Records and Tuples.
 
 The central property is:
 
@@ -46,7 +47,7 @@ The MVP must prove:
 - document archive/restore lifecycle;
 - serialized writes;
 - failure rollback;
-- partial-write truncation;
+- recovery from partial writes without advancing the committed file position;
 - deterministic replay to the last complete revision.
 
 ---
@@ -62,15 +63,15 @@ The MVP must prove:
 - Random opaque Document IDs.
 - Random opaque Revision IDs.
 - Document `type`.
-- Revision metadata including `timestamp`, `from`, and archive state as in the old simplified metadata model.
+- Internally generated Revision metadata containing exactly `id`, `timestamp`, `archived`, and `from`.
 - Document archive/restore as soft deletion represented through revisions.
 - Recursive discovery of only values not yet persisted.
-- One collected output buffer per save.
+- One collected output payload per Revision transaction.
 - One serialized write transaction at a time.
 - Forked counters.
 - Speculative persistent-map entries with rollback.
-- One awaited file append per transaction.
-- Last committed byte offset and truncation after partial write failure.
+- Positioned file writes beginning at the last committed byte offset.
+- An unchanged committed position after write failure, allowing the next write to overwrite an incomplete suffix.
 - Replay/recovery where a complete Revision is the logical commit boundary.
 - Minimal read/version APIs needed for documents and revisions.
 
@@ -127,6 +128,9 @@ MVP persistent value domain:
 - Record.
 
 **BigInt is removed**, matching the current Oddo design.
+
+A Document body is always a Record. Tuples remain valid as nested values inside
+that Record, but a Revision cannot use a Tuple or primitive as its data root.
 
 ### 4.3 `undefined`
 
@@ -247,7 +251,7 @@ A Revision connects:
 - its random revision identity;
 - Document reference;
 - metadata Record reference;
-- data root reference;
+- data Record reference;
 - document archive state.
 
 The Revision is the final logical entry of every transaction.
@@ -284,8 +288,10 @@ Preserve the old counter/reference-store philosophy for
 String/Tuple/Record/Document/Revision stores. Counters are store-local Numbers
 with two operations: `fork()` creates a counter starting at the current value,
 and `getId()` returns the current value and increments it. Do not add global
-counter management, a `nextId` helper, safe-integer checks, or BigInt store
-counters. BigInt remains limited to internal codec arithmetic.
+counter management, a `nextId` helper, store-level safe-integer checks, or
+BigInt store counters. The compact integer codec retains its input validation;
+this defines the practical upper bound for Number-backed store counters. BigInt
+remains limited to internal codec arithmetic.
 
 Reference functions immediately encode the numeric counter value into a plain
 string such as `S...`, `A...`, `O...`, `D...`, or `R...`. Store Maps retain that
@@ -294,7 +300,8 @@ wrapper object.
 
 ### 6.4 Counter transactionality
 
-Every counter that can advance during a save is forked before transaction discovery begins.
+Every counter that can advance during a Revision transaction is forked before
+transaction discovery begins.
 
 Committed counters are not advanced during speculative discovery.
 
@@ -356,9 +363,9 @@ New mappings may be inserted eagerly into the normal persistent Map so the same
 new canonical value encountered later in the current transaction resolves to
 the same provisional compact reference.
 
-Every speculative insertion must be recorded in the transaction rollback
-journal. The journal belongs to transaction orchestration. Stores do not retain
-a transaction-local `entries` collection or any other transaction journal.
+Every speculative insertion is reported to transaction orchestration as a
+`[keys, value]` cleanup entry. Stores do not retain a transaction-local entries
+collection.
 
 On a miss, the store calls `write(definition, value, keys)`. The transaction
 callback appends the definition and immediately records `[keys, value]`. Child
@@ -381,7 +388,7 @@ getKey(write, value)
 
 `write` remains a plain function, not an object. Its exact call is
 `write(definition, value, keys)`: it appends the definition and records
-`[keys, value]` for transaction rollback.
+`[keys, value]` for transaction cleanup on failure.
 
 The rewritten algorithm differs in lookup mechanism and transaction safety, not in traversal shape.
 
@@ -400,7 +407,7 @@ The queue is naturally child-before-parent.
 Example:
 
 ```text
-new strings/primitive references
+new String definitions and inline primitive values
 new child Tuples
 new child Records
 new parent Tuple/Record
@@ -409,7 +416,8 @@ revision metadata Record if new
 final Revision
 ```
 
-The complete queue is joined/encoded into one transaction payload before file I/O begins.
+The complete definition sequence is joined into one transaction payload before
+file I/O begins.
 
 ---
 
@@ -417,9 +425,13 @@ The complete queue is joined/encoded into one transaction payload before file I/
 
 ### 9.1 Serialized write queue
 
-At most one write transaction may be in preparation/write/publication/rollback at a time.
+At most one write transaction may be in preparation, persistence, or rollback
+at a time. A successful Revision is published synchronously before the next
+queued operation begins.
 
-The queue covers the **whole transaction**, not merely `adapter.write`.
+The queue covers operation preparation, discovery, and persistence, not merely
+the filesystem write. Publication immediately follows the successful queued
+commit.
 
 A later write must never observe speculative IDs/mappings created by an earlier uncommitted write.
 
@@ -429,10 +441,10 @@ A transaction needs at least:
 
 ```text
 forked counters
-created/speculative mapping journal
+created/speculative [keys, value] cleanup entries
 output definitions
-provisional Document/Revision state
-start file offset
+queued Revision-producing operation
+committed file position
 ```
 
 All of this state belongs to transaction orchestration. A store's only
@@ -448,79 +460,67 @@ Do not publish Document/Revision state into committed indexes during discovery.
 
 After the complete transaction payload has been written successfully:
 
-1. Keep the speculative value->reference Map entries; they are now committed.
-2. Replace committed counters with the transaction counter forks.
-3. Publish the new Document if this was a create.
-4. Publish the Revision.
+1. Advance the committed file position to the value returned after the complete write.
+2. Keep the speculative value->reference Map entries; they are now committed.
+3. Keep the transaction counter forks as the current store counters.
+4. Publish the Revision, including its Document identity when this was a create.
 5. Update the Document's revision history/latest state/archive state.
-6. Advance `committedEndOffset` by the actual encoded byte length.
-7. Resolve the save promise.
+6. Resolve the entity operation promise.
 
 ### 9.4 Failure path
 
 If the write rejects:
 
-1. Delete every speculative value->reference Map entry recorded in the rollback journal.
-2. Discard all forked counters.
-3. Publish no new Document.
-4. Publish no Revision.
-5. Leave the committed Document/revision indexes unchanged.
-6. Truncate the file back to the transaction's captured start offset.
-7. Leave `committedEndOffset` unchanged.
-8. Reject the save promise.
+1. Delete every speculative value->reference Map entry recorded as a cleanup entry.
+2. Restore the previous store counters, discarding the transaction forks.
+3. Publish no Revision or new Document identity.
+4. Leave the committed Document/revision indexes unchanged.
+5. Leave the committed file position unchanged.
+6. Reject the entity operation promise.
 
-If truncation/recovery itself fails, the instance must not continue accepting writes against an unknown physical suffix.
+A partial physical suffix may remain after a failed write. The next queued write
+starts at the unchanged committed position and overwrites it. If the process is
+closed first, `DB.open()` finds the last complete Revision boundary and
+truncates the suffix before returning the database.
+
+A rejected write does not disable or poison the database instance. After
+cleanup, the queue continues with later operations from the unchanged committed
+position.
 
 ---
 
-## 10. File offset and one-write rule
+## 10. File position and one-payload rule
 
-Maintain:
+The writer retains the byte position immediately after the last successfully
+committed transaction. That position is the starting offset for the next
+transaction.
 
-```js
-let committedEndOffset
-```
+All entries for one Revision transaction are joined into one payload before I/O.
+The final Revision is not written as a separate transaction. A short filesystem
+write may require continuing the same payload from the returned byte count.
 
-This is the byte offset immediately after the last successfully committed transaction and the starting position of the next transaction.
+The writer advances its position only after the complete payload succeeds. On
+failure the position remains unchanged, so the next transaction overwrites any
+partial suffix at the same byte offset.
 
-Before a write:
-
-```js
-const startOffset = committedEndOffset
-```
-
-All entries for one revision transaction are written in **one logical adapter write**. The final Revision is not written in a separate call.
-
-On failure, truncate to `startOffset`.
-
-Offsets are byte offsets, not JavaScript UTF-16 string lengths.
+Positions are byte offsets, not JavaScript UTF-16 string lengths.
 
 ---
 
 ## 11. Replay and recovery
 
-Preserve the old append/replay model, but make replay transactional.
+Preserve the old sequential-file/replay model while using explicit write
+positions for live transactions.
 
 Replay, rather than the live stores, owns the ordered ID -> value tables needed
 to resolve compact references while loading. These reconstruction tables are
 separate from the stores' value -> compact-reference Maps.
 
-After the last accepted Revision, parsed definitions belong to a provisional replay transaction.
-
-Only when a complete Revision entry parses successfully is that pending group accepted as committed.
-
-At that point:
-
-- accept its store/counter advances;
-- reconstruct/publish its Document and Revision state;
-- update the last committed byte offset to the position after the Revision.
-
-If EOF or malformed trailing data occurs before a complete Revision:
-
-- discard the provisional replay transaction;
-- keep the previously committed stores/counters/indexes;
-- retain the previous committed offset;
-- truncate the incomplete physical suffix before accepting future writes.
+On open, a syntax pass records the byte offset after each complete Revision. If
+EOF or malformed trailing data occurs, the last such offset is the committed
+boundary. Replay then consumes only that complete prefix into fresh stores and
+committed indexes. `DB.open()` truncates bytes after the boundary before it
+accepts future writes.
 
 No extra checksum, frame-length wrapper, JSONL envelope, or file header is part of the current MVP design.
 
@@ -576,11 +576,13 @@ The parser must:
 - detect malformed/incomplete trailing input; and
 - yield complete syntactic entries in physical order.
 
+Only a completed Revision entry exposes `endOffset`, because Revision boundaries
+are the offsets used for recovery. Other parsed values do not retain offsets.
+
 The parser is syntax-only. It does not resolve references, reconstruct values,
 own provisional transaction state, perform I/O, or publish Documents and
-Revisions. The replay layer consumes parser entries, reconstructs children before
-parents, holds provisional state between Revision boundaries, and accepts that
-state only when it receives a complete final Revision.
+Revisions. The replay layer consumes the complete prefix selected by the
+Revision-boundary scan and reconstructs children before parents.
 
 ---
 
@@ -687,25 +689,32 @@ R1 -> R2 -> R3 -> R4
         -> R5
 ```
 
-If R5 was created by taking R2 and editing/republishing from there:
+If R5 was created by taking R2 and editing from there:
 
 ```text
-R5.from = R2
+R5.metadata.from = R2.id
 ```
 
 R5 may be chronologically newer than R4 while still descending from R2.
 
 This lineage is a historical fact and belongs in revision metadata.
+The persistence kernel stores the caller-selected `from` value without checking
+that the referenced Revision exists or belongs to the same Document. Such
+validation belongs to a higher layer.
 
 ### 15.3 Revision metadata
 
-Preserve the old simplification: metadata itself is stored using the ordinary Record/value machinery and the public/in-memory revision can derive/reconstruct fields from the surrounding Revision entry.
+Metadata is an ordinary persisted Record containing exactly:
 
-MVP metadata retains the old useful concepts:
+```js
+Record({ id, timestamp, archived, from })
+```
 
-- `timestamp`;
-- `from`;
-- `archived` where the old metadata representation keeps it for convenience.
+Callers do not provide an arbitrary metadata object. Revision `id` is a random
+UUID and `timestamp` is generated with `Date.now()` when the queued operation
+executes. A first Revision stores `from: null`. `update` receives the intended
+ancestor Revision ID from its caller. Archive and restore set `from` to the
+latest Revision ID when their queued operation begins.
 
 `user` is not an MVP feature. The old code hard-coded it and never implemented a real user source.
 
@@ -719,12 +728,12 @@ Preserve the old top-level structure conceptually:
 Revision(
   DocumentRef,
   MetadataRecordRef,
-  DataRootRef,
+  DataRecordRef,
   ArchivedState
 )
 ```
 
-Archive state may also exist in metadata for convenience; do not remove that duplication simply for normalization.
+Archive state also exists in metadata for convenience; do not remove that duplication simply for normalization.
 
 ---
 
@@ -747,7 +756,9 @@ Document type remains core data.
 
 ### 16.2 Document creation
 
-A new Document and its first Revision are one persistence transaction.
+A call to `db.createEntity(name).create(data)` creates a new Document and its
+first Revision in one queued persistence transaction. The Document remains the
+small internal Record `{ id, type: name }`.
 
 The new Document must not become visible in committed in-memory state before the transaction write succeeds.
 
@@ -761,13 +772,23 @@ On failure, its provisional counter allocation is discarded and the Document is 
 
 `archived` is **Document state**, i.e. document-level soft deletion.
 
-It is recorded in revision data because every Revision preserves what the Document state became at that historical point.
+It is recorded on every Revision because each Revision preserves what the
+Document state became at that historical point. It is not a field injected into
+the Document body. The value is stored both in Revision metadata and in the
+top-level Revision entry.
 
 ### 17.2 Archive/restore behavior
 
 Archiving or restoring creates another Revision. History is never physically deleted.
 
-An archive-only or restore-only Revision can reuse the exact same data root as the prior Revision.
+`entity.archive(documentId)` and `entity.restore(documentId)` enter the same
+serialized queue as create and update. When their turn begins, they resolve the
+latest committed Revision, reuse its exact data Record, set `from` to that
+Revision's ID, and set the new archive state.
+
+`entity.update(...)` resolves the current Revision inside the queue and throws
+`Cannot update archived document` when that Revision is archived. The Document
+must be restored before it can be updated.
 
 ### 17.3 Preserve metadata duplication
 
@@ -777,7 +798,7 @@ This is intentional convenience, not a normalization bug to remove in the MVP.
 
 ### 17.4 Filtering
 
-For document-selection/current-document APIs, preserve tri-state archive filtering:
+Collection-form `db.latest` uses tri-state archive filtering:
 
 ```js
 archived: false // active documents only; normal/default collection view
@@ -785,31 +806,59 @@ archived: true  // archived documents only
 archived: null  // all documents regardless of archive state
 ```
 
-Exact historical Revision access must remain possible. Do not make archive soft deletion erase history.
+`db.latest({ id })` returns the latest Revision for one Document and ignores an
+`archived` option. Exact historical Revision access through `db.revision(id)`
+and `db.revisions({ id })` remains available; archive soft deletion never erases
+history.
 
 ---
 
-## 18. API direction
+## 18. Public API
 
-Do not perform a new API-design project before implementing the persistence MVP.
-
-Preserve the old vocabulary where it still maps cleanly:
+The package exports `DB`, `Record`, and `Tuple`. A database is created or opened
+with:
 
 ```js
-DB.create(...)
-DB.open(...)
-
-db.save(...)
-db.latest(...)
-db.revision(...)
-db.revisions(...)
+const db = await DB.create(filename)
+const reopened = await DB.open(filename) // open an existing database
 ```
 
-`save` remains a good name because every modification creates a Revision rather than destructively updating a row.
+Writes are exposed through a named entity handle:
 
-Archive/restore convenience methods may be thin wrappers over `save` using the existing data root and appropriate archive state/`from` ancestry.
+```js
+const posts = db.createEntity('post')
 
-The old general query DSL is not part of the MVP. Basic methods may return direct values/collections rather than recreating `iterable.js`/`query-item.js` machinery.
+const first = await posts.create(dataRecord)
+const next = await posts.update(documentId, dataRecord, { from: first.id })
+const archived = await posts.archive(documentId)
+const restored = await posts.restore(documentId)
+```
+
+`createEntity(name)` establishes the Document `type` used by `create`. Defining
+the same entity name twice on one database instance throws. The public API does
+not expose the internal `addDocumentType` or raw `save` functions.
+
+`create(data)` requires an Oddo Record and creates a random Document identity and
+its first Revision in one queued transaction. `update(id, data, { from })`
+requires a Record body and accepts the caller-selected ancestor Revision ID.
+Entity operations resolve to the committed Revision they created.
+
+Reads and lifecycle remain database-level:
+
+```js
+db.latest()                    // latest active Revisions
+db.latest({ archived: false }) // latest active Revisions
+db.latest({ archived: true })  // latest archived Revisions
+db.latest({ archived: null })  // latest Revisions regardless of archive state
+db.latest({ id: documentId })  // one Document's latest Revision
+db.revision(revisionId)        // one historical Revision
+db.revisions({ id: documentId }) // one Document's complete history
+await db.close()
+```
+
+The old general query DSL is not part of the MVP. These methods return direct
+values or collections rather than recreating `iterable.js`/`query-item.js`
+machinery.
 
 ---
 
@@ -817,15 +866,19 @@ The old general query DSL is not part of the MVP. Basic methods may return direc
 
 ### Writes
 
-All writes are serialized through one queue covering preparation through publish/rollback.
+All writes are serialized through one queue covering preparation, discovery,
+persistence, and rollback. Successful publication immediately follows the
+queued commit and occurs before the next operation begins.
 
-A rejected transaction must not poison the queue after rollback/truncation completes.
+A rejected transaction does not block the queue after in-memory cleanup completes.
 
 ### Reads
 
 Reads expose only committed state.
 
-There is no extra read queue requirement. If a caller needs read-after-write behavior, it awaits `db.save(...)` before reading.
+There is no extra read queue requirement. If a caller needs read-after-write
+behavior, it awaits the entity create/update/archive/restore operation before
+reading.
 
 ---
 
@@ -835,9 +888,9 @@ This section is the primary code-level handover.
 
 ---
 
-## `src/helpers.js`
+## Historical `src/helpers.js` -> current `src/stores.mjs` and `src/commit.mjs`
 
-### Status: **MODIFY heavily; preserve the store/get-or-create pattern**
+### Status: **IMPLEMENTED; store/get-or-create pattern preserved**
 
 ### KEEP
 
@@ -853,8 +906,8 @@ This section is the primary code-level handover.
 - Use normal Map-based backing stores where appropriate instead of `Object.create` lookup tables.
 - Forked counters must begin from the committed counter value, not reset to zero.
 - Transaction discovery may eagerly add speculative canonical-value->reference
-  mappings, but transaction orchestration owns the rollback journal. Do not add
-  store-local pending entries.
+  mappings, but transaction orchestration owns the `[keys, value]` cleanup
+  entries. Do not add store-local pending entries.
 - On a miss, the store passes `definition`, `value`, and `keys` to `write`;
   transaction orchestration immediately records `[keys, value]` and queues the
   definition.
@@ -874,9 +927,9 @@ Store counters are Numbers, and a fork begins at the current counter value.
 
 ---
 
-## `src/stores.js`
+## Historical `src/stores.js` -> current `src/stores.mjs` and `src/replay.mjs`
 
-### Status: **KEEP architecture; rewrite implementation around Oddo and transactions**
+### Status: **IMPLEMENTED around Oddo and transactions**
 
 ### KEEP
 
@@ -885,7 +938,7 @@ Store counters are Numbers, and a fork begins at the current counter value.
 - Tuple child-first serialization.
 - Record decomposition into keys Tuple + values Tuple.
 - Document `{ id, type }` concept.
-- Final top-level Revision containing Document, metadata, data root, archive state.
+- Final top-level Revision containing Document, metadata, Record body, and archive state.
 - Generic `matchType`/type-dispatch concept.
 - Replay-layer reconstruction of stores from token definitions/references.
 
@@ -897,6 +950,7 @@ Store counters are Numbers, and a fork begins at the current counter value.
 - Records use Oddo's unordered canonical key order.
 - `documentStore` keeps random Document IDs and uses a global compact `D` reference counter.
 - `recordStore` becomes RevisionStore; random Revision IDs live in metadata while `R` remains compact and repository-local.
+- Revision data accepts an Oddo Record root only; Tuples remain valid as nested values.
 - BigInt value handling is removed.
 - Oddo values contain no `undefined`; JavaScript wrappers normalize host `undefined` to null before native construction.
 - `-0` normalization occurs in number encoding.
@@ -915,27 +969,17 @@ Store counters are Numbers, and a fork begins at the current counter value.
 
 ## `src/db.mjs`
 
-### Status: **KEEP repository/create/open/save shape; rewrite transaction control**
+### Status: **IMPLEMENTED**
 
-### KEEP
-
-- `repository(adapter)` factory concept.
-- `ContentRepository` instance per file.
-- `create` and `open` entry points.
-- `save` constructing one complete output collection before adapter write.
-- replay/load as reconstruction from the append-only file.
-
-### MODIFY
-
-- `save` becomes async and **must await** the adapter write.
-- Add one serialized write queue.
-- Capture `committedEndOffset` before each transaction.
-- Fork counters before discovery.
-- Track speculative Map insertions.
-- Publish Document/Revision state only after awaited write success.
-- On failure: rollback mappings, discard forks, truncate file to transaction start offset, reject.
-- `load` must propagate unrecoverable parse/open errors rather than merely `console.error` them.
-- Replay must commit only through complete Revision boundaries.
+- Exposes `DB.create` and `DB.open`.
+- Exposes `createEntity`, committed Revision reads, and `close` on each database.
+- Keeps raw Revision construction and save orchestration private.
+- Serializes each entity operation through the writer queue.
+- Publishes a Revision and its Document history only after its payload succeeds.
+- Delays update/archive/restore state lookup until the operation reaches the queue.
+- Rejects updates to archived Documents.
+- Replays the append-only history through complete Revision boundaries.
+- Closes the file handle and propagates the error if open/replay/recovery fails.
 
 ### REMOVE from MVP
 
@@ -947,9 +991,9 @@ Store counters are Numbers, and a fork begins at the current counter value.
 
 ---
 
-## `src/utils.js`
+## Historical `src/utils.js` -> current `src/codec.mjs`
 
-### Status: **KEEP codec core; split/trim unrelated utilities**
+### Status: **IMPLEMENTED; codec core retained and unrelated utilities removed**
 
 ### KEEP
 
@@ -974,9 +1018,9 @@ Store counters are Numbers, and a fork begins at the current counter value.
 
 ---
 
-## `src/symbols.js`
+## Historical `src/symbols.js` -> current `src/symbols.mjs`
 
-### Status: **KEEP typed-reference abstraction; adapt codec/value names**
+### Status: **IMPLEMENTED; typed-reference abstraction retained**
 
 ### KEEP
 
@@ -998,9 +1042,9 @@ Do not rename persistent token letters merely to make them spell Tuple/Record un
 
 ---
 
-## `src/parser/tokenizer.js`
+## Historical `src/parser/tokenizer.js` -> current `src/parser.mjs`
 
-### Status: **REPLACE parser implementation; KEEP grammar**
+### Status: **IMPLEMENTED; parser replaced and grammar retained**
 
 ### KEEP
 
@@ -1017,15 +1061,15 @@ Do not rename persistent token letters merely to make them spell Tuple/Record un
 ### REPLACE WITH
 
 A deterministic sequential parser/scanner that parses the existing compact
-language directly and yields syntactic entries with byte offsets. Reference
-resolution, provisional state, and Revision-boundary acceptance belong to replay,
-not to the parser.
+language directly and yields syntactic entries. Only completed Revision entries
+expose their ending byte offset. Reference resolution and publication belong to
+replay, not to the parser.
 
 ---
 
-## `src/getters.js`
+## Historical `src/getters.js` -> current `src/db.mjs`
 
-### Status: **SIMPLIFY heavily**
+### Status: **IMPLEMENTED INLINE**
 
 ### KEEP
 
@@ -1035,7 +1079,7 @@ not to the parser.
 - lookup by Document ID and Revision ID.
 - basic `latest`, `revision`, `revisions` concepts.
 
-### MODIFY
+### IMPLEMENTED FORM
 
 - use Map-based indexes rather than old plain-object tables where appropriate.
 - Document/revision state is published only after persistence succeeds.
@@ -1110,21 +1154,16 @@ RPC/network integration is explicitly deferred.
 
 ---
 
-## `src/adapters/ascii.js`
+## Historical `src/adapters/ascii.js` -> current `src/persist.mjs`
 
-### Status: **KEEP minimal adapter idea; MODIFY for transaction recovery**
+### Status: **IMPLEMENTED WITHOUT AN ADAPTER HIERARCHY**
 
-### KEEP
-
-- extremely small filesystem abstraction.
-- create/open/append semantics.
-
-### MODIFY
-
-- all async operations are awaited.
-- add truncation by byte offset.
-- expose enough information to maintain/update `committedEndOffset` correctly.
-- write accepts/uses the exact transaction payload built before I/O.
+- Files are opened directly in `src/db.mjs`.
+- `src/persist.mjs` writes an already-built transaction payload at the supplied
+  byte position and continues short writes until the payload is complete.
+- The writer advances its committed position only after complete success.
+- `DB.open()` truncates an incomplete suffix after replay identifies the last
+  complete Revision boundary.
 
 ### DO NOT ADD
 
@@ -1145,53 +1184,51 @@ Browser persistence was an early development convenience and is not part of the 
 
 ## Package/build metadata
 
-### Status: **CLEAN UP**
+### Status: **IMPLEMENTED**
 
 - ESM remains appropriate.
-- remove the `fs` npm placeholder dependency; use Node's built-in filesystem modules.
-- keep the current `node --test` test command.
-- do not carry Parcel/browser build dependencies into the core MVP unless a separate development need requires them.
+- Node's built-in filesystem modules are used without an `fs` npm placeholder dependency.
+- The test command is `node --test`.
+- Parcel/browser build dependencies are absent from the core MVP.
 
 ---
 
-# 21. Suggested new MVP source layout
-
-This is a mapping suggestion, not a new architectural layer. Keep it small.
+# 21. Implemented MVP source layout
 
 ```text
 src/
-  values.mjs         // local Oddo runtime copy + cached Record decomposition helpers
-  db.mjs             // repository instance, queue, transaction orchestration
-  stores.mjs         // String/Tuple/Record/Document/Revision stores
   codec.mjs          // safe compact integers + Float64 encoding
-  symbols.mjs        // compact reference-string functions
+  commit.mjs         // definition collection and failure cleanup
+  db.mjs             // public database/entity API and committed read indexes
+  index.mjs          // package exports
+  init.mjs           // internal store initialization export
   parser.mjs         // deterministic syntax-only compact-stream parser
+  persist.mjs        // positioned filesystem writes
+  queue.mjs          // serialized operation queue
   replay.mjs         // reference resolution and Revision-boundary recovery
-  getters.mjs        // minimal committed document/revision indexes and reads
-  adapters/
-    file.mjs         // create/open/append/truncate
+  stores.mjs         // String/Tuple/Record/Document/Revision stores
+  symbols.mjs        // compact reference-string functions
+  values.mjs         // local Oddo runtime copy + cached Record decomposition helpers
+  writer.mjs         // queued Revision discovery and persistence
 ```
 
-Replay may remain inside `db.mjs` if that is smaller, but parser and replay are
-separate responsibilities.
-
-Do not reproduce the old module split when a module only existed for a deferred feature.
+Committed history/read indexes remain inside `db.mjs`; no separate getters
+module or adapter hierarchy is needed.
 
 Tests:
 
 ```text
 test/
   codec.test.mjs
-  stores.test.mjs
-  transaction.test.mjs
+  db.test.mjs
+  parser.test.mjs
+  persistence.test.mjs
   recovery.test.mjs
-  versioning.test.mjs
-  archive.test.mjs
+  values.test.mjs
 ```
 
-This test list is a coverage target, not authorization to create tests. Add or
-change tests only with explicit user permission. Any approved new tests must be
-unit tests.
+These test modules are present. Add or change tests only with explicit user
+permission. Any approved new tests must be unit tests.
 
 ---
 
@@ -1201,7 +1238,7 @@ unit tests.
 
 Implemented:
 
-- deterministic sequential syntax parser with byte offsets;
+- deterministic sequential syntax parser whose completed Revision entries expose their ending byte offset;
 - malformed and incomplete suffix detection;
 - safe high-radix integer mapping with surrogate hole;
 - encode/decode counter round trips;
@@ -1237,16 +1274,17 @@ Implemented:
 - random Document IDs + type;
 - random Revision IDs in metadata;
 - metadata Record persistence;
-- caller-provided `from` metadata persistence;
-- caller-provided timestamp metadata; and
+- internally generated Revision IDs and timestamps;
+- `from: null` on the first Revision;
+- caller-selected ancestry on update;
 - archive state in Revisions.
 
-## Phase 4 — Minimal transaction discovery and rollback — next
+## Phase 4 — Minimal transaction discovery and rollback — implemented
 
-Implement:
+Implemented:
 
 - a transaction-owned output array;
-- a transaction-owned speculative-map rollback journal;
+- transaction-owned `[keys, value]` cleanup entries;
 - immediate recording of `[keys, value]` from every store miss;
 - the plain `write(definition, value, keys)` callback;
 - counter forks before discovery;
@@ -1254,49 +1292,46 @@ Implement:
 - keeping forked counters and Map entries on success; and
 - deleting speculative Map entries and restoring counters on failure.
 
-Do not add a store-local entries journal or turn `write` into an object.
+Stores retain no cleanup entries. `write` remains a plain function, not an object.
 
-## Phase 5 — Durable serialized write
+## Phase 5 — Durable serialized write — implemented
 
-Implement:
+Implemented:
 
 - serialized write queue;
 - one payload per transaction;
-- awaited append;
-- `committedEndOffset`;
-- truncate on partial failure; and
-- expose a success boundary that later committed-state publication can use.
+- awaited positioned writes, including short-write continuation;
+- a committed byte position that advances only after complete success;
+- retry overwrite from the unchanged position after failure; and
+- publication only after persistence succeeds.
 
-## Phase 6 — Replay and recovery
+## Phase 6 — Replay and recovery — implemented
 
-Consume entries from the existing parser, resolve their references, and rebuild
-values child-first. Hold replay state provisionally and accept it only at a
-complete final Revision.
+Implemented a syntax pass that finds the last complete Revision boundary,
+followed by child-first reference resolution of that committed prefix. Open
+truncates an incomplete suffix and starts the writer at the recovered byte
+position.
 
-Recover last committed byte offset.
+## Phase 7 — Minimal committed indexes and public API — implemented
 
-## Phase 7 — Minimal committed indexes and public API
+Implemented:
 
-Implement the old-style direct vocabulary needed by MVP:
-
-- committed Document and Revision indexes/history, staged during discovery and
-  published through the durable-write success boundary only after append;
-- create/open;
-- save;
-- latest;
-- revision;
-- revisions;
-- archive/restore convenience if retained as public helpers.
+- committed Revision indexes/history published only after persistence succeeds;
+- `DB.create` and `DB.open`;
+- `db.createEntity(name)`;
+- entity `create`, `update`, `archive`, and `restore`;
+- database-level `latest`, `revision`, and `revisions`; and
+- automatic internal Revision metadata.
 
 Do not implement the old query DSL.
 
 ---
 
-# 23. Permission-gated correctness cases
+# 23. Correctness cases
 
-These are eventual acceptance requirements. They do not authorize test creation
-or modification. Tests may be added only after explicit user permission, and any
-approved new tests must be unit tests.
+These are MVP acceptance requirements. Further test creation or modification
+still requires explicit user permission, and approved new tests must be unit
+tests.
 
 ## 23.1 Canonical persistence
 
@@ -1331,10 +1366,11 @@ Inject failure after writing arbitrary byte prefixes of a complete transaction p
 
 Verify:
 
-- save rejects;
+- the entity operation rejects;
 - memory rolls back;
-- file truncates to prior `committedEndOffset`;
-- next transaction succeeds with correct compact references.
+- the committed file position remains unchanged;
+- the next transaction overwrites the partial suffix and succeeds with correct compact references;
+- reopening before a retry truncates the suffix to the last complete Revision.
 
 ## 23.5 Replay boundaries
 
@@ -1349,17 +1385,19 @@ Create R1 -> R2 -> R3, then create R4 from R1.
 Verify:
 
 - R4 is chronologically latest;
-- `R4.from === R1.id`;
+- `R4.metadata.from === R1.id`;
 - R2/R3 remain in history;
 - ancestry is not inferred merely from chronological order.
 
 ## 23.7 Archive
 
 - archive creates a new Revision;
-- archive-only revision can reuse same data root;
+- archive-only revision reuses the latest data Record;
+- archive and restore derive `from` and data when their queued operation begins;
 - current Document archived state updates only after successful write;
 - failed archive leaves current state unchanged;
 - restore creates a later Revision;
+- update rejects while the latest Revision is archived;
 - `archived: false`, `true`, and `null` select active, archived, and all documents respectively;
 - historical revisions remain accessible.
 
@@ -1412,8 +1450,9 @@ The implementation agent must not:
 - add or change tests without explicit user permission, or add non-unit tests;
 - advance committed counters before write success;
 - publish Documents/Revisions before write success;
-- let an unawaited adapter write escape from `save`;
-- continue writes after truncation/recovery failure.
+- let an unawaited filesystem write escape from an entity operation;
+- advance the committed file position after a failed write;
+- return a database instance after open/replay/recovery fails.
 
 ---
 
@@ -1428,36 +1467,39 @@ The implementation is correct only if all of these remain true.
 5. Revisions are the final logical transaction entries.
 6. Document and Revision IDs are random opaque identities; `D` and `R` remain compact repository-local counter references.
 7. Document `type` remains persisted.
-8. `from` records actual ancestor Revision, not merely chronological predecessor.
-9. Archive is Document state preserved historically through Revisions.
-10. A failed transaction consumes no counter-based store IDs; generated random identities remain unpublished.
-11. A failed transaction leaves no speculative Map mappings.
-12. A failed transaction publishes no Document/Revision state.
-13. A failed partial file append is truncated to the prior committed byte offset.
-14. Replay accepts no transaction lacking a complete final Revision.
-15. At most one write transaction is active at a time.
-16. Reads expose committed state only.
-17. The old compact grammar architecture remains the persistent format.
-18. The parser yields syntax and byte offsets only; replay resolves and publishes state.
-19. Stores retain only counter forks as transaction-local state; transaction orchestration owns rollback journals and output.
-20. Live compact references are strings, not wrapper objects.
+8. Every Document body is an Oddo Record; Tuples may occur inside it.
+9. Revision metadata is generated internally as `{ id, timestamp, archived, from }`, with `from: null` on creation.
+10. `from` records actual ancestor Revision, not merely chronological predecessor.
+11. Archive is Document state preserved historically through Revisions.
+12. Updating an archived Document is rejected until it is restored.
+13. A failed transaction consumes no counter-based store IDs; generated random identities remain unpublished.
+14. A failed transaction leaves no speculative Map mappings.
+15. A failed transaction publishes no Document/Revision state.
+16. A failed partial write leaves the committed position unchanged, and the next write overwrites from that position.
+17. Replay accepts no transaction lacking a complete final Revision.
+18. At most one write transaction is active at a time.
+19. Reads expose committed state only.
+20. The old compact grammar architecture remains the persistent format.
+21. The parser yields syntax, with `endOffset` only on completed Revisions; replay resolves and publishes state.
+22. Stores retain only counter forks as transaction-local state; transaction orchestration owns `[keys, value]` cleanup entries and output.
+23. Live compact references are strings, not wrapper objects.
 
 ---
 
 # 26. Historical source guide
 
-Use these old files as implementation references, subject to the KEEP/MODIFY/REMOVE rules above:
+These old files remain historical references for the current modules:
 
-- `src/helpers.js` — store/get-or-create mechanism and old fork concept.
-- `src/stores.js` — String/Array/Object/Document/top-level Record stores; child-first serialization; metadata/data/document assembly.
-- `src/db.mjs` — one-output-array save shape and create/open lifecycle; also contains the unawaited-write bug to fix.
-- `src/utils.js` — compact integer and Float64 codecs.
-- `src/symbols.js` — functions that produce typed compact reference strings.
-- `src/parser/tokenizer.js` — authoritative old token grammar, but **not** the parser architecture to copy.
-- `src/getters.js` — old Document/revision/history/archive bookkeeping; strip publication/draft/query complexity.
+- `src/helpers.js` -> `src/stores.mjs` and `src/commit.mjs` for store/get-or-create and counter-fork mechanisms.
+- `src/stores.js` -> `src/stores.mjs` and `src/replay.mjs` for child-first definitions and value reconstruction.
+- `src/db.mjs` -> current `src/db.mjs`, `src/writer.mjs`, `src/queue.mjs`, `src/commit.mjs`, `src/persist.mjs`, and `src/replay.mjs` for file lifecycle, transactions, and replay.
+- `src/utils.js` -> `src/codec.mjs` for compact integers and Float64 encoding.
+- `src/symbols.js` -> `src/symbols.mjs` for compact typed references.
+- `src/parser/tokenizer.js` -> `src/parser.mjs` for the grammar, with the old tokenizer algorithm replaced.
+- `src/getters.js` -> current `src/db.mjs` for committed Revision/history/archive reads.
 - `src/schema.js`, `src/models.js`, `src/relations.js` — deferred-layer prior art only; do not port to MVP.
 - `src/query.js`, `src/iterable.js`, `src/query-item.js` — old query DSL; do not port to MVP.
-- `src/adapters/ascii.js` — minimal filesystem adapter idea; add awaited writes/truncate.
+- `src/adapters/ascii.js` -> `src/persist.mjs` and `src/db.mjs` for positioned writes and open-time suffix truncation.
 
 ---
 
@@ -1482,28 +1524,28 @@ recursive child-first discovery
 provisional references from forked counters
         |
         v
-speculative Map entries + transaction-owned rollback journal
+speculative Map entries + transaction-owned cleanup entries
         |
         v
 compact old-IDBX-style definitions
         |
         v
-Document / metadata / data
+Document / internal metadata / Record data
         |
         v
 final Revision
         |
         v
-one awaited append
+one payload written at the committed position
      /       \
  success     failure
    |           |
 keep maps    delete speculative maps
-publish      discard counter forks
-counters     publish nothing
-doc/rev      truncate file
-advance      reject
-file offset
+keep forks   restore previous counters
+advance      publish nothing
+position     keep file position
+publish      reject
+Revision
 ```
 
 Everything above this kernel—plain-JS conversion, proxy mutation, RPC, schemas, relations, models, publication—is deliberately deferred.
