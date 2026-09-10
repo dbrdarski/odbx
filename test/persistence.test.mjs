@@ -67,8 +67,8 @@ test("a retry starts at the unchanged position after a partial write fails", asy
   };
   const write = createWriter(stores, file);
 
-  await assert.rejects(write(revision), error => error === failure);
-  await write(revision);
+  await assert.rejects(write(() => revision), error => error === failure);
+  await write(() => revision);
 
   assert.deepEqual(attempts.map(({ position }) => position), [
     0,

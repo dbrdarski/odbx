@@ -65,15 +65,21 @@ test("archive filtering and restore survive reopening", async t => {
   const restoredDocument = posts.createDocument();
   const archivedInitial = await created.save(archivedDocument, {
     metadata: { timestamp: 1 },
+    data: Record({ title: "Initial" }),
+  });
+  const edit = created.save(archivedDocument, {
+    metadata: { timestamp: 2, from: archivedInitial.id },
     data: Record({ title: "Archived" }),
   });
-  const archived = await created.archive(archivedDocument, { timestamp: 2 });
+  const archive = created.archive(archivedDocument.id, { timestamp: 3 });
+  const [edited, archived] = await Promise.all([edit, archive]);
   const restoredInitial = await created.save(restoredDocument, {
-    metadata: { timestamp: 3 },
+    metadata: { timestamp: 4 },
     data: Record({ title: "Restored" }),
   });
-  const beforeRestore = await created.archive(restoredDocument, { timestamp: 4 });
-  const restored = await created.restore(restoredDocument, { timestamp: 5 });
+  const archiving = created.archive(restoredDocument.id, { timestamp: 5 });
+  const restoring = created.restore(restoredDocument.id, { timestamp: 6 });
+  const [beforeRestore, restored] = await Promise.all([archiving, restoring]);
   await created.close();
 
   const db = await DB.open(filename);
@@ -86,9 +92,9 @@ test("archive filtering and restore survive reopening", async t => {
   assert.deepEqual(ids(db.latest({ archived: true })), [archived.id]);
   assert.deepEqual(ids(db.latest({ archived: null })), ids([archived, restored]));
   assert.equal(db.latest({ id: archivedDocument.id, archived: false }).id, archived.id);
-  assert.equal(db.revision(archived.id).metadata.from, archivedInitial.id);
+  assert.equal(db.revision(archived.id).metadata.from, edited.id);
   assert.equal(db.revision(restored.id).metadata.from, beforeRestore.id);
-  assert.equal(db.revision(archivedInitial.id).data, db.revision(archived.id).data);
+  assert.equal(db.revision(edited.id).data, db.revision(archived.id).data);
   assert.equal(db.revision(restoredInitial.id).data, db.revision(restored.id).data);
 });
 

@@ -23,22 +23,22 @@ const createDatabase = async (file, bytes) => {
   const write = createWriter(stores, file, endOffset);
   const save = (document, options) => {
     const revision = stores.createRevision(document, options);
-    return write(revision).then(() => publish(revision));
+    return write(() => revision).then(publish);
   };
-  const setArchived = (document, metadata, archived) => {
-    const revision = latest(document);
-    return save(document, {
+  const setArchived = (id, metadata, archived) => write(() => {
+    const revision = latest({ id });
+    return stores.createRevision(revision.document, {
       metadata: { ...metadata, from: revision.id },
       data: revision.data,
       archived,
     });
-  };
+  }).then(publish);
 
   return {
     addDocumentType: stores.addDocumentType,
     save,
-    archive: (document, metadata) => setArchived(document, metadata, true),
-    restore: (document, metadata) => setArchived(document, metadata, false),
+    archive: (id, metadata) => setArchived(id, metadata, true),
+    restore: (id, metadata) => setArchived(id, metadata, false),
     latest,
     revision: id => revisionsById.get(id),
     revisions: getRevisions,

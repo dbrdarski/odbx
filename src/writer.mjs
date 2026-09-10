@@ -7,5 +7,9 @@ export function createWriter(stores, file, position = 0) {
     [stringStore, tupleStore, recordStore, documentStore, revisionStore],
     payload => persist(file, payload, position).then(next => position = next),
   );
-  return revision => commit(write => revisionStore.getKey(write, revision));
+  return operation => commit(write => {
+    const revision = operation();
+    revisionStore.getKey(write, revision);
+    return revision;
+  });
 }
