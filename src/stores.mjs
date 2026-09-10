@@ -68,13 +68,13 @@ export function createStores() {
       createDocument: () => Record({ id: randomHash(), type: name }),
     };
   };
-  const createRevision = (document, { data, from, archived = false }) => {
+  const createRevision = (document, { data, from = null, archived = false }) => {
     if (!(data instanceof Record)) throw new TypeError("Document data must be a Record");
     const id = randomHash();
     return {
       id,
       document,
-      metadata: Record({ id, timestamp: Date.now(), archived, ...(from ? { from } : {}) }),
+      metadata: Record({ id, timestamp: Date.now(), archived, from }),
       data,
       archived,
     };

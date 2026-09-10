@@ -38,6 +38,7 @@ test("create, save and reopen a document", async t => {
 
   assert.equal(firstRevision.document.id, documentId);
   assert.equal(firstRevision.data, firstData);
+  assert.equal(firstRevision.metadata.from, null);
   assert.equal(typeof firstRevision.metadata.timestamp, "number");
   assert.deepEqual(db.revisions(identity).map(revision => revision.id), [
     firstRevision.id,
