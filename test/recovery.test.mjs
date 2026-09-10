@@ -10,15 +10,10 @@ test("open discards an incomplete transaction", async t => {
   const directory = await mkdtemp(join(tmpdir(), "odbx-recovery-"));
   const filename = join(directory, "content.odbx");
   const created = await DB.create(filename);
-  const document = created.addDocumentType("post").createDocument();
-  const first = await created.save(document, {
-    metadata: { timestamp: 1 },
-    data: Record({ title: "First" }),
-  });
-  await created.save(document, {
-    metadata: { timestamp: 2, from: first.id },
-    data: Record({ title: "Incomplete" }),
-  });
+  const posts = created.createEntity("post");
+  const first = await posts.create(Record({ title: "First" }));
+  const documentId = first.document.id;
+  await posts.update(documentId, Record({ title: "Incomplete" }), { from: first.id });
   await created.close();
 
   const complete = await readFile(filename);
@@ -26,13 +21,14 @@ test("open discards an incomplete transaction", async t => {
   await writeFile(filename, complete.subarray(0, -1));
 
   const recovered = await DB.open(filename);
-  const identity = { id: document.id };
+  const identity = { id: documentId };
   assert.equal((await stat(filename)).size, firstEndOffset);
   assert.deepEqual(recovered.revisions(identity).map(({ id }) => id), [first.id]);
-  const replacement = await recovered.save(recovered.latest(identity).document, {
-    metadata: { timestamp: 2, from: first.id },
-    data: Record({ title: "Replacement" }),
-  });
+  const replacement = await recovered.createEntity("post").update(
+    documentId,
+    Record({ title: "Replacement" }),
+    { from: first.id },
+  );
   await recovered.close();
 
   const reopened = await DB.open(filename);

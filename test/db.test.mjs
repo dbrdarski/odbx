@@ -13,18 +13,13 @@ test("create, save and reopen a document", async t => {
   const filename = join(directory, "content.odbx");
   const created = await DB.create(filename);
 
-  const document = created.addDocumentType("post").createDocument();
-  assert.throws(() => created.save(document, { metadata: {}, data: Tuple() }), /Document data must be a Record/);
+  const posts = created.createEntity("post");
+  await assert.rejects(posts.create(Tuple()), /Document data must be a Record/);
   const firstData = Record({ title: "Hello" });
-  const firstRevision = await created.save(document, {
-    metadata: { timestamp: 1 },
-    data: firstData,
-  });
+  const firstRevision = await posts.create(firstData);
+  const documentId = firstRevision.document.id;
   const secondData = Record({ title: "Hello again" });
-  const secondRevision = await created.save(document, {
-    metadata: { timestamp: 2, from: firstRevision.id },
-    data: secondData,
-  });
+  const secondRevision = await posts.update(documentId, secondData, { from: firstRevision.id });
   await created.close();
 
   const db = await DB.open(filename);
@@ -32,16 +27,18 @@ test("create, save and reopen a document", async t => {
     await db.close();
     // await rm(directory, { recursive: true, force: true });
   });
-  const identity = { id: document.id };
+  const identity = { id: documentId };
   const thirdData = Record({ title: "Hello once more" });
-  const thirdRevision = await db.save(db.latest(identity).document, {
-    metadata: { timestamp: 3, from: secondRevision.id },
-    data: thirdData,
-  });
+  const thirdRevision = await db.createEntity("post").update(
+    documentId,
+    thirdData,
+    { from: secondRevision.id },
+  );
   const entries = [...parse(await readFile(filename))];
 
-  assert.equal(firstRevision.document, document);
+  assert.equal(firstRevision.document.id, documentId);
   assert.equal(firstRevision.data, firstData);
+  assert.equal(typeof firstRevision.metadata.timestamp, "number");
   assert.deepEqual(db.revisions(identity).map(revision => revision.id), [
     firstRevision.id,
     secondRevision.id,
@@ -60,25 +57,20 @@ test("archive filtering and restore survive reopening", async t => {
   const directory = await mkdtemp(join(tmpdir(), "odbx-archive-"));
   const filename = join(directory, "content.odbx");
   const created = await DB.create(filename);
-  const posts = created.addDocumentType("post");
-  const archivedDocument = posts.createDocument();
-  const restoredDocument = posts.createDocument();
-  const archivedInitial = await created.save(archivedDocument, {
-    metadata: { timestamp: 1 },
-    data: Record({ title: "Initial" }),
-  });
-  const edit = created.save(archivedDocument, {
-    metadata: { timestamp: 2, from: archivedInitial.id },
-    data: Record({ title: "Archived" }),
-  });
-  const archive = created.archive(archivedDocument.id, { timestamp: 3 });
+  const posts = created.createEntity("post");
+  const archivedInitial = await posts.create(Record({ title: "Initial" }));
+  const archivedDocumentId = archivedInitial.document.id;
+  const edit = posts.update(
+    archivedDocumentId,
+    Record({ title: "Archived" }),
+    { from: archivedInitial.id },
+  );
+  const archive = posts.archive(archivedDocumentId);
   const [edited, archived] = await Promise.all([edit, archive]);
-  const restoredInitial = await created.save(restoredDocument, {
-    metadata: { timestamp: 4 },
-    data: Record({ title: "Restored" }),
-  });
-  const archiving = created.archive(restoredDocument.id, { timestamp: 5 });
-  const restoring = created.restore(restoredDocument.id, { timestamp: 6 });
+  const restoredInitial = await posts.create(Record({ title: "Restored" }));
+  const restoredDocumentId = restoredInitial.document.id;
+  const archiving = posts.archive(restoredDocumentId);
+  const restoring = posts.restore(restoredDocumentId);
   const [beforeRestore, restored] = await Promise.all([archiving, restoring]);
   await created.close();
 
@@ -91,7 +83,7 @@ test("archive filtering and restore survive reopening", async t => {
   assert.deepEqual(ids(db.latest({ archived: false })), [restored.id]);
   assert.deepEqual(ids(db.latest({ archived: true })), [archived.id]);
   assert.deepEqual(ids(db.latest({ archived: null })), ids([archived, restored]));
-  assert.equal(db.latest({ id: archivedDocument.id, archived: false }).id, archived.id);
+  assert.equal(db.latest({ id: archivedDocumentId, archived: false }).id, archived.id);
   assert.equal(db.revision(archived.id).metadata.from, edited.id);
   assert.equal(db.revision(restored.id).metadata.from, beforeRestore.id);
   assert.equal(db.revision(edited.id).data, db.revision(archived.id).data);
@@ -102,23 +94,12 @@ test("revision ancestry is independent of chronological order", async t => {
   const directory = await mkdtemp(join(tmpdir(), "odbx-ancestry-"));
   const filename = join(directory, "content.odbx");
   const created = await DB.create(filename);
-  const document = created.addDocumentType("post").createDocument();
-  const first = await created.save(document, {
-    metadata: { timestamp: 1 },
-    data: Record({ version: 1 }),
-  });
-  const second = await created.save(document, {
-    metadata: { timestamp: 2, from: first.id },
-    data: Record({ version: 2 }),
-  });
-  const third = await created.save(document, {
-    metadata: { timestamp: 3, from: second.id },
-    data: Record({ version: 3 }),
-  });
-  const branch = await created.save(document, {
-    metadata: { timestamp: 4, from: first.id },
-    data: Record({ version: 4 }),
-  });
+  const posts = created.createEntity("post");
+  const first = await posts.create(Record({ version: 1 }));
+  const documentId = first.document.id;
+  const second = await posts.update(documentId, Record({ version: 2 }), { from: first.id });
+  const third = await posts.update(documentId, Record({ version: 3 }), { from: second.id });
+  const branch = await posts.update(documentId, Record({ version: 4 }), { from: first.id });
   await created.close();
 
   const db = await DB.open(filename);
@@ -126,10 +107,10 @@ test("revision ancestry is independent of chronological order", async t => {
     await db.close();
     await rm(directory, { recursive: true, force: true });
   });
-  assert.deepEqual(db.revisions({ id: document.id }).map(({ id }) => id), [
+  assert.deepEqual(db.revisions({ id: documentId }).map(({ id }) => id), [
     first.id, second.id, third.id, branch.id,
   ]);
-  assert.equal(db.latest({ id: document.id }).id, branch.id);
+  assert.equal(db.latest({ id: documentId }).id, branch.id);
   assert.equal(db.revision(second.id).metadata.from, first.id);
   assert.equal(db.revision(third.id).metadata.from, second.id);
   assert.equal(db.revision(branch.id).metadata.from, first.id);

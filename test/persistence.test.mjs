@@ -52,7 +52,6 @@ test("a retry starts at the unchanged position after a partial write fails", asy
   const stores = createStores();
   const document = stores.addDocumentType("post").createDocument();
   const revision = stores.createRevision(document, {
-    metadata: { timestamp: 1 },
     data: Record({ title: "Retried" }),
   });
   const failure = Error("write failed");
