@@ -23,13 +23,14 @@ test("create, save and reopen a document", async t => {
   await created.close();
 
   const db = await DB.open(filename);
+  const reopenedPosts = db.createEntity("post");
   t.after(async () => {
     await db.close();
     // await rm(directory, { recursive: true, force: true });
   });
   const identity = { id: documentId };
   const thirdData = Record({ title: "Hello once more" });
-  const thirdRevision = await db.createEntity("post").update(
+  const thirdRevision = await reopenedPosts.update(
     documentId,
     thirdData,
     { from: secondRevision.id },
@@ -47,8 +48,8 @@ test("create, save and reopen a document", async t => {
   ]);
   assert.equal(db.revision(firstRevision.id).data, firstData);
   assert.equal(db.revision(secondRevision.id).data, secondData);
-  assert.equal(db.latest(identity), thirdRevision);
-  assert.equal(db.latest(identity).data, thirdData);
+  assert.equal(reopenedPosts.latest(identity), thirdRevision);
+  assert.equal(reopenedPosts.latest(identity).data, thirdData);
   assert.equal(entries.filter(entry => entry.type === "document").length, 1);
   assert.equal(entries.filter(entry => entry.type === "revision").length, 3);
   assert.equal(entries.at(-1).type, "revision");
@@ -80,15 +81,16 @@ test("archive filtering and restore survive reopening", async t => {
   await created.close();
 
   const db = await DB.open(filename);
+  const reopenedPosts = db.createEntity("post");
   t.after(async () => {
     await db.close();
     await rm(directory, { recursive: true, force: true });
   });
-  assert.deepEqual(ids(db.latest()), [restored.id]);
-  assert.deepEqual(ids(db.latest({ archived: false })), [restored.id]);
-  assert.deepEqual(ids(db.latest({ archived: true })), [archived.id]);
-  assert.deepEqual(ids(db.latest({ archived: null })), ids([archived, restored]));
-  assert.equal(db.latest({ id: archivedDocumentId, archived: false }).id, archived.id);
+  assert.deepEqual(ids(reopenedPosts.latest()), [restored.id]);
+  assert.deepEqual(ids(reopenedPosts.latest({ archived: false })), [restored.id]);
+  assert.deepEqual(ids(reopenedPosts.latest({ archived: true })), [archived.id]);
+  assert.deepEqual(ids(reopenedPosts.latest({ archived: null })), ids([archived, restored]));
+  assert.equal(reopenedPosts.latest({ id: archivedDocumentId, archived: false }).id, archived.id);
   assert.equal(db.revision(archived.id).metadata.from, edited.id);
   assert.equal(db.revision(restored.id).metadata.from, beforeRestore.id);
   assert.equal(db.revision(edited.id).data, db.revision(archived.id).data);
@@ -108,6 +110,7 @@ test("revision ancestry is independent of chronological order", async t => {
   await created.close();
 
   const db = await DB.open(filename);
+  const reopenedPosts = db.createEntity("post");
   t.after(async () => {
     await db.close();
     await rm(directory, { recursive: true, force: true });
@@ -115,7 +118,7 @@ test("revision ancestry is independent of chronological order", async t => {
   assert.deepEqual(db.revisions({ id: documentId }).map(({ id }) => id), [
     first.id, second.id, third.id, branch.id,
   ]);
-  assert.equal(db.latest({ id: documentId }).id, branch.id);
+  assert.equal(reopenedPosts.latest({ id: documentId }).id, branch.id);
   assert.equal(db.revision(second.id).metadata.from, first.id);
   assert.equal(db.revision(third.id).metadata.from, second.id);
   assert.equal(db.revision(branch.id).metadata.from, first.id);

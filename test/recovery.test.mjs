@@ -32,8 +32,9 @@ test("open discards an incomplete transaction", async t => {
   await recovered.close();
 
   const reopened = await DB.open(filename);
+  const reopenedPosts = reopened.createEntity("post");
   assert.deepEqual(reopened.revisions(identity).map(({ id }) => id), [first.id, replacement.id]);
-  assert.equal(reopened.latest(identity).data.title, "Replacement");
+  assert.equal(reopenedPosts.latest(identity).data.title, "Replacement");
   await reopened.close();
   await rm(directory, { recursive: true, force: true });
 });

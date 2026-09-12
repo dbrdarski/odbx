@@ -72,7 +72,7 @@ update.
 ```js
 const documentId = created.document.id;
 
-db.latest({ id: documentId });     // latest Revision for one document
+posts.latest({ id: documentId });  // latest Revision for one document
 db.revision(created.id);           // one Revision by Revision ID
 db.revisions({ id: documentId });  // complete history for one document
 ```
@@ -81,10 +81,10 @@ Collection-form `latest()` filters Revisions by their documents' current
 archive state:
 
 ```js
-db.latest();                     // latest active Revisions
-db.latest({ archived: false });  // latest active Revisions
-db.latest({ archived: true });   // latest archived Revisions
-db.latest({ archived: null });   // all latest Revisions
+posts.latest();                     // latest active post Revisions
+posts.latest({ archived: false });  // latest active post Revisions
+posts.latest({ archived: true });   // latest archived post Revisions
+posts.latest({ archived: null });   // all latest post Revisions
 ```
 
 These collection calls return the latest Revision for each matching document.

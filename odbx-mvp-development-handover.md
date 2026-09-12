@@ -798,7 +798,8 @@ This is intentional convenience, not a normalization bug to remove in the MVP.
 
 ### 17.4 Filtering
 
-Collection-form `db.latest` uses tri-state archive filtering:
+Collection-form `entity.latest` uses tri-state archive filtering within that
+entity type:
 
 ```js
 archived: false // active documents only; normal/default collection view
@@ -806,7 +807,8 @@ archived: true  // archived documents only
 archived: null  // all documents regardless of archive state
 ```
 
-`db.latest({ id })` returns the latest Revision for one Document and ignores an
+`entity.latest({ id })` returns the latest Revision for one Document of that
+entity type and ignores an
 `archived` option. Exact historical Revision access through `db.revision(id)`
 and `db.revisions({ id })` remains available; archive soft deletion never erases
 history.
@@ -843,14 +845,15 @@ its first Revision in one queued transaction. `update(id, data, { from })`
 requires a Record body and accepts the caller-selected ancestor Revision ID.
 Entity operations resolve to the committed Revision they created.
 
-Reads and lifecycle remain database-level:
+Latest reads belong to the entity handle; historical reads and lifecycle remain
+database-level:
 
 ```js
-db.latest()                    // latest active Revisions
-db.latest({ archived: false }) // latest active Revisions
-db.latest({ archived: true })  // latest archived Revisions
-db.latest({ archived: null })  // latest Revisions regardless of archive state
-db.latest({ id: documentId })  // one Document's latest Revision
+posts.latest()                    // latest active post Revisions
+posts.latest({ archived: false }) // latest active post Revisions
+posts.latest({ archived: true })  // latest archived post Revisions
+posts.latest({ archived: null })  // latest post Revisions regardless of archive state
+posts.latest({ id: documentId })  // one post Document's latest Revision
 db.revision(revisionId)        // one historical Revision
 db.revisions({ id: documentId }) // one Document's complete history
 await db.close()

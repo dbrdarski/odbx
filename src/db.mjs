@@ -32,6 +32,12 @@ const createDatabase = async (file, bytes) => {
   });
   const createEntity = name => {
     const { createDocument } = stores.addDocumentType(name);
+    const entityLatest = options => {
+      const result = latest(options);
+      return options?.id
+        ? result?.document.type === name ? result : undefined
+        : result.filter(revision => revision.document.type === name);
+    };
     return {
       create: data => save(() => stores.createRevision(createDocument(), { data })),
       update: (id, data, { from }) => save(() => {
@@ -41,12 +47,12 @@ const createDatabase = async (file, bytes) => {
       }),
       archive: id => setArchived(id, true),
       restore: id => setArchived(id, false),
+      latest: entityLatest,
     };
   };
 
   return {
     createEntity,
-    latest,
     revision: id => revisionsById.get(id),
     revisions: getRevisions,
     close: () => file.close(),
