@@ -5,39 +5,39 @@ import { createWriter } from "./writer.mjs";
 
 const createDatabase = async (file, bytes) => {
   const stores = createStores();
-  const histories = new Map();
-  const revisionsById = new Map();
-  const getRevisions = document => histories.get(document.id) ?? [];
+  const entities = Object.create(null);
+  const getEntity = type => entities[type] ??= {
+    histories: new Map(),
+    revisions: new Map(),
+  };
   const publish = revision => {
-    histories.set(revision.document.id, [...getRevisions(revision.document), revision]);
-    revisionsById.set(revision.id, revision);
+    const entity = getEntity(revision.document.type);
+    const history = entity.histories.get(revision.document.id) ?? [];
+    entity.histories.set(revision.document.id, [...history, revision]);
+    entity.revisions.set(revision.id, revision);
     return revision;
   };
-  const latest = options => options?.id
-    ? getRevisions(options).at(-1)
-    : Array.from(histories.values(), revisions => revisions.at(-1)).filter(
-      revision => options?.archived === null || revision.archived === (options?.archived ?? false),
-    );
   const endOffset = bytes ? replay(stores, bytes, publish) : 0;
   if (bytes?.length > endOffset) await file.truncate(endOffset);
   const write = createWriter(stores, file, endOffset);
   const save = operation => write(operation).then(publish);
-  const setArchived = (id, archived) => save(() => {
-    const revision = latest({ id });
-    return stores.createRevision(revision.document, {
-      from: revision.id,
-      data: revision.data,
-      archived,
-    });
-  });
   const createEntity = name => {
     const { createDocument } = stores.addDocumentType(name);
-    const entityLatest = options => {
-      const result = latest(options);
-      return options?.id
-        ? result?.document.type === name ? result : undefined
-        : result.filter(revision => revision.document.type === name);
-    };
+    const { histories, revisions } = getEntity(name);
+    const getRevisions = document => histories.get(document.id) ?? [];
+    const latest = options => options?.id
+      ? getRevisions(options).at(-1)
+      : Array.from(histories.values(), revisions => revisions.at(-1)).filter(
+        revision => options?.archived === null || revision.archived === (options?.archived ?? false),
+      );
+    const setArchived = (id, archived) => save(() => {
+      const revision = latest({ id });
+      return stores.createRevision(revision.document, {
+        from: revision.id,
+        data: revision.data,
+        archived,
+      });
+    });
     return {
       create: data => save(() => stores.createRevision(createDocument(), { data })),
       update: (id, data, { from }) => save(() => {
@@ -47,14 +47,14 @@ const createDatabase = async (file, bytes) => {
       }),
       archive: id => setArchived(id, true),
       restore: id => setArchived(id, false),
-      latest: entityLatest,
+      latest,
+      revision: id => revisions.get(id),
+      revisions: getRevisions,
     };
   };
 
   return {
     createEntity,
-    revision: id => revisionsById.get(id),
-    revisions: getRevisions,
     close: () => file.close(),
   };
 };

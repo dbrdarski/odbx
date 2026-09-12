@@ -73,8 +73,8 @@ update.
 const documentId = created.document.id;
 
 posts.latest({ id: documentId });  // latest Revision for one document
-db.revision(created.id);           // one Revision by Revision ID
-db.revisions({ id: documentId });  // complete history for one document
+posts.revision(created.id);        // one Revision by Revision ID
+posts.revisions({ id: documentId }); // complete history for one document
 ```
 
 Collection-form `latest()` filters Revisions by their documents' current

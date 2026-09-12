@@ -21,10 +21,11 @@ test("open discards an incomplete transaction", async t => {
   await writeFile(filename, complete.subarray(0, -1));
 
   const recovered = await DB.open(filename);
+  const recoveredPosts = recovered.createEntity("post");
   const identity = { id: documentId };
   assert.equal((await stat(filename)).size, firstEndOffset);
-  assert.deepEqual(recovered.revisions(identity).map(({ id }) => id), [first.id]);
-  const replacement = await recovered.createEntity("post").update(
+  assert.deepEqual(recoveredPosts.revisions(identity).map(({ id }) => id), [first.id]);
+  const replacement = await recoveredPosts.update(
     documentId,
     Record({ title: "Replacement" }),
     { from: first.id },
@@ -33,7 +34,7 @@ test("open discards an incomplete transaction", async t => {
 
   const reopened = await DB.open(filename);
   const reopenedPosts = reopened.createEntity("post");
-  assert.deepEqual(reopened.revisions(identity).map(({ id }) => id), [first.id, replacement.id]);
+  assert.deepEqual(reopenedPosts.revisions(identity).map(({ id }) => id), [first.id, replacement.id]);
   assert.equal(reopenedPosts.latest(identity).data.title, "Replacement");
   await reopened.close();
   await rm(directory, { recursive: true, force: true });

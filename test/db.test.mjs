@@ -41,13 +41,13 @@ test("create, save and reopen a document", async t => {
   assert.equal(firstRevision.data, firstData);
   assert.equal(firstRevision.metadata.from, null);
   assert.equal(typeof firstRevision.metadata.timestamp, "number");
-  assert.deepEqual(db.revisions(identity).map(revision => revision.id), [
+  assert.deepEqual(reopenedPosts.revisions(identity).map(revision => revision.id), [
     firstRevision.id,
     secondRevision.id,
     thirdRevision.id,
   ]);
-  assert.equal(db.revision(firstRevision.id).data, firstData);
-  assert.equal(db.revision(secondRevision.id).data, secondData);
+  assert.equal(reopenedPosts.revision(firstRevision.id).data, firstData);
+  assert.equal(reopenedPosts.revision(secondRevision.id).data, secondData);
   assert.equal(reopenedPosts.latest(identity), thirdRevision);
   assert.equal(reopenedPosts.latest(identity).data, thirdData);
   assert.equal(entries.filter(entry => entry.type === "document").length, 1);
@@ -91,10 +91,10 @@ test("archive filtering and restore survive reopening", async t => {
   assert.deepEqual(ids(reopenedPosts.latest({ archived: true })), [archived.id]);
   assert.deepEqual(ids(reopenedPosts.latest({ archived: null })), ids([archived, restored]));
   assert.equal(reopenedPosts.latest({ id: archivedDocumentId, archived: false }).id, archived.id);
-  assert.equal(db.revision(archived.id).metadata.from, edited.id);
-  assert.equal(db.revision(restored.id).metadata.from, beforeRestore.id);
-  assert.equal(db.revision(edited.id).data, db.revision(archived.id).data);
-  assert.equal(db.revision(restoredInitial.id).data, db.revision(restored.id).data);
+  assert.equal(reopenedPosts.revision(archived.id).metadata.from, edited.id);
+  assert.equal(reopenedPosts.revision(restored.id).metadata.from, beforeRestore.id);
+  assert.equal(reopenedPosts.revision(edited.id).data, reopenedPosts.revision(archived.id).data);
+  assert.equal(reopenedPosts.revision(restoredInitial.id).data, reopenedPosts.revision(restored.id).data);
 });
 
 test("revision ancestry is independent of chronological order", async t => {
@@ -115,11 +115,11 @@ test("revision ancestry is independent of chronological order", async t => {
     await db.close();
     await rm(directory, { recursive: true, force: true });
   });
-  assert.deepEqual(db.revisions({ id: documentId }).map(({ id }) => id), [
+  assert.deepEqual(reopenedPosts.revisions({ id: documentId }).map(({ id }) => id), [
     first.id, second.id, third.id, branch.id,
   ]);
   assert.equal(reopenedPosts.latest({ id: documentId }).id, branch.id);
-  assert.equal(db.revision(second.id).metadata.from, first.id);
-  assert.equal(db.revision(third.id).metadata.from, second.id);
-  assert.equal(db.revision(branch.id).metadata.from, first.id);
+  assert.equal(reopenedPosts.revision(second.id).metadata.from, first.id);
+  assert.equal(reopenedPosts.revision(third.id).metadata.from, second.id);
+  assert.equal(reopenedPosts.revision(branch.id).metadata.from, first.id);
 });

@@ -809,9 +809,9 @@ archived: null  // all documents regardless of archive state
 
 `entity.latest({ id })` returns the latest Revision for one Document of that
 entity type and ignores an
-`archived` option. Exact historical Revision access through `db.revision(id)`
-and `db.revisions({ id })` remains available; archive soft deletion never erases
-history.
+`archived` option. Exact historical Revision access through
+`entity.revision(id)` and `entity.revisions({ id })` remains available; archive
+soft deletion never erases history.
 
 ---
 
@@ -845,8 +845,7 @@ its first Revision in one queued transaction. `update(id, data, { from })`
 requires a Record body and accepts the caller-selected ancestor Revision ID.
 Entity operations resolve to the committed Revision they created.
 
-Latest reads belong to the entity handle; historical reads and lifecycle remain
-database-level:
+Reads belong to the entity handle; database lifecycle remains database-level:
 
 ```js
 posts.latest()                    // latest active post Revisions
@@ -854,8 +853,8 @@ posts.latest({ archived: false }) // latest active post Revisions
 posts.latest({ archived: true })  // latest archived post Revisions
 posts.latest({ archived: null })  // latest post Revisions regardless of archive state
 posts.latest({ id: documentId })  // one post Document's latest Revision
-db.revision(revisionId)        // one historical Revision
-db.revisions({ id: documentId }) // one Document's complete history
+posts.revision(revisionId)        // one historical post Revision
+posts.revisions({ id: documentId }) // one post Document's complete history
 await db.close()
 ```
 
