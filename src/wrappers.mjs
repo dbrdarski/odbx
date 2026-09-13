@@ -1,8 +1,8 @@
-import { Record, Tuple } from './values.mjs'
+import { Record, Tuple } from "./values.mjs"
 
 const isPlainObject = value =>
   value !== null &&
-  typeof value === 'object' &&
+  typeof value === "object" &&
   [Object.prototype, null].includes(Object.getPrototypeOf(value))
 
 export const fromJS = value =>
@@ -20,6 +20,6 @@ export const decodeJSON = source =>
   JSON.parse(source, (_, value) =>
     Array.isArray(value)
       ? Tuple(...value)
-      : value !== null && typeof value === 'object'
+      : value !== null && typeof value === "object"
         ? Record(value)
         : value)

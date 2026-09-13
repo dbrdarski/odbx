@@ -17,11 +17,11 @@ Document bodies must be Oddo `Record` values. Records may contain strings,
 numbers, booleans, `null`, other Records, and ordered `Tuple` values.
 
 ```js
-import { Record, Tuple } from 'odbx';
+import { Record, Tuple } from "odbx";
 
 const article = Record({
-  title: 'Introducing odbx',
-  tags: Tuple('database', 'javascript'),
+  title: "Introducing odbx",
+  tags: Tuple("database", "javascript"),
 });
 ```
 
@@ -33,12 +33,12 @@ and values are the same canonical value regardless of field insertion order.
 `DB.create()` creates a new database file. `DB.open()` opens an existing one.
 
 ```js
-import { DB, Record } from 'odbx';
+import { DB, Record } from "odbx";
 
-const db = await DB.create('./content.odbx');
-const posts = db.createEntity('post');
+const db = await DB.create("./content.odbx");
+const posts = db.createEntity("post");
 
-const created = await posts.create(Record({ title: 'First post' }));
+const created = await posts.create(Record({ title: "First post" }));
 
 console.log(created.id);          // Revision ID
 console.log(created.document.id); // Document ID
@@ -50,7 +50,7 @@ name becomes the type of Documents made by `create`:
 ```js
 const updated = await posts.update(
   created.document.id,
-  Record({ title: 'Edited post' }),
+  Record({ title: "Edited post" }),
   { from: created.id },
 );
 
@@ -96,8 +96,8 @@ its archive state.
 ```js
 await db.close();
 
-const reopened = await DB.open('./content.odbx');
-const reopenedPosts = reopened.createEntity('post');
+const reopened = await DB.open("./content.odbx");
+const reopenedPosts = reopened.createEntity("post");
 
 // Read or write through reopened and reopenedPosts.
 

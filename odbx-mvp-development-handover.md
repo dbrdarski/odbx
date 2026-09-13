@@ -828,7 +828,7 @@ const reopened = await DB.open(filename) // open an existing database
 Writes are exposed through a named entity handle:
 
 ```js
-const posts = db.createEntity('post')
+const posts = db.createEntity("post")
 
 const first = await posts.create(dataRecord)
 const next = await posts.update(documentId, dataRecord, { from: first.id })

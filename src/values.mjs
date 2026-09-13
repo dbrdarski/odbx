@@ -15,7 +15,7 @@ export function extendFn(fn, parent) {
   return fn
 }
 
-const isReferential = (value) => value !== null && (typeof value === 'object' || typeof value === 'function');
+const isReferential = (value) => value !== null && (typeof value === "object" || typeof value === "function");
 
 const createNode = () => ({
   primitives: new Map(),
@@ -79,7 +79,7 @@ export const Record = extendFn(function Record(props) {
       const key = keys[i]
       const val = props[key]
       parts.push(key, val)
-      if (key === '__proto__')
+      if (key === "__proto__")
         Object.defineProperty(record, key, {
           value: val,
           enumerable: true,

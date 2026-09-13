@@ -1,10 +1,10 @@
-import { Buffer } from 'node:buffer';
-import { RADIX, decodeDigit, intToFloat } from './codec.mjs';
+import { Buffer } from "node:buffer";
+import { RADIX, decodeDigit, intToFloat } from "./codec.mjs";
 
 export class ParseError extends SyntaxError {
   constructor(message, offset, entryOffset, incomplete = false) {
     super(`${message} at byte ${offset}`);
-    this.name = 'ParseError';
+    this.name = "ParseError";
     this.offset = offset;
     this.entryOffset = entryOffset;
     this.incomplete = incomplete;
@@ -13,7 +13,7 @@ export class ParseError extends SyntaxError {
 
 /**
  * Yield complete entries in physical order without materializing a token array.
- * References are { type: 'S' | 'A' | 'O' | 'D' | 'R', id: number }.
+ * References are { type: "S" | "A" | "O" | "D" | "R", id: number }.
  * Documents contain String references for their identity and type.
  * Revision end offsets are UTF-8 bytes, including for string input. Pass file
  * bytes directly so invalid UTF-8 in a torn suffix cannot be replaced during
@@ -33,13 +33,13 @@ class Scanner {
   #entryOffset = 0;
 
   constructor(input) {
-    if (typeof input === 'string') {
-      if (!input.isWellFormed()) throw new TypeError('Input contains unpaired UTF-16 surrogates');
-      this.#bytes = Buffer.from(input, 'utf8');
+    if (typeof input === "string") {
+      if (!input.isWellFormed()) throw new TypeError("Input contains unpaired UTF-16 surrogates");
+      this.#bytes = Buffer.from(input, "utf8");
     } else if (input instanceof Uint8Array) {
       this.#bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength);
     } else {
-      throw new TypeError('Expected a string, Buffer, or Uint8Array');
+      throw new TypeError("Expected a string, Buffer, or Uint8Array");
     }
   }
 
@@ -50,7 +50,7 @@ class Scanner {
   }
 
   #peek() {
-    if (this.eof) this.#fail('Unexpected end of input', this.#offset, true);
+    if (this.eof) this.#fail("Unexpected end of input", this.#offset, true);
     return String.fromCharCode(this.#bytes[this.#offset]);
   }
 
@@ -77,15 +77,15 @@ class Scanner {
       length = 4;
       point = first & 0x07;
     } else {
-      this.#fail('Invalid UTF-8 leading byte', start);
+      this.#fail("Invalid UTF-8 leading byte", start);
     }
     for (let i = 1; i < length; i++) {
-      if (this.eof) this.#fail('Incomplete UTF-8 sequence', this.#offset, true);
+      if (this.eof) this.#fail("Incomplete UTF-8 sequence", this.#offset, true);
       const next = this.#bytes[this.#offset];
       if (next < 0x80 || next > 0xbf || (i === 1 && (
         (first === 0xe0 && next < 0xa0) || (first === 0xed && next > 0x9f) ||
         (first === 0xf0 && next < 0x90) || (first === 0xf4 && next > 0x8f)
-      ))) this.#fail('Invalid UTF-8 continuation byte');
+      ))) this.#fail("Invalid UTF-8 continuation byte");
       this.#offset++;
       point = (point << 6) | (next & 0x3f);
     }
@@ -104,16 +104,16 @@ class Scanner {
         digit = decodeDigit(point);
       } catch (error) {
         if (!(error instanceof RangeError)) throw error;
-        this.#fail('Invalid compact integer digit', digitOffset);
+        this.#fail("Invalid compact integer digit", digitOffset);
       }
       result += BigInt(digit) * place;
       place *= RADIX;
     }
-    if (this.#offset === start) this.#fail('Expected compact integer digits', start, this.eof);
+    if (this.#offset === start) this.#fail("Expected compact integer digits", start, this.eof);
     return result;
   }
 
-  #reference(types = 'SAODR') {
+  #reference(types = "SAODR") {
     const type = this.#peek();
     if (!types.includes(type)) this.#fail(`Expected ${types} reference`);
     this.#offset++;
@@ -122,53 +122,53 @@ class Scanner {
 
   #boolean() {
     const token = this.#peek();
-    if (token !== 'T' && token !== 'F') this.#fail('Expected Boolean');
+    if (token !== "T" && token !== "F") this.#fail("Expected Boolean");
     this.#offset++;
-    return { type: 'primitive', value: token === 'T' };
+    return { type: "primitive", value: token === "T" };
   }
 
   #value() {
     const token = this.#peek();
-    if (token === 'T' || token === 'F') return this.#boolean();
-    if (token === 'V') {
+    if (token === "T" || token === "F") return this.#boolean();
+    if (token === "V") {
       this.#offset++;
-      return { type: 'primitive', value: null };
+      return { type: "primitive", value: null };
     }
-    if (token === 'N') {
+    if (token === "N") {
       const start = this.#offset++;
       const bits = this.#integer();
-      if (bits > 0xffff_ffff_ffff_ffffn) this.#fail('Float64 payload exceeds 64 bits', start);
-      return { type: 'primitive', value: intToFloat(bits) };
+      if (bits > 0xffff_ffff_ffff_ffffn) this.#fail("Float64 payload exceeds 64 bits", start);
+      return { type: "primitive", value: intToFloat(bits) };
     }
-    if ('SAODR'.includes(token)) return this.#reference();
-    this.#fail('Expected primitive or typed reference');
+    if ("SAODR".includes(token)) return this.#reference();
+    this.#fail("Expected primitive or typed reference");
   }
 
   #string() {
     const start = this.#offset;
-    this.#expect('"');
+    this.#expect("\"");
     while (true) {
       const token = this.#peek();
       const byte = this.#bytes[this.#offset];
-      if (token === '"') {
+      if (token === "\"") {
         this.#offset++;
-        return JSON.parse(this.#bytes.toString('utf8', start, this.#offset));
+        return JSON.parse(this.#bytes.toString("utf8", start, this.#offset));
       }
-      if (token === '\\') {
+      if (token === "\\") {
         this.#offset++;
         const escape = this.#peek();
-        if (escape === 'u') {
+        if (escape === "u") {
           this.#offset++;
           for (let i = 0; i < 4; i++) {
-            if (!'0123456789abcdefABCDEF'.includes(this.#peek())) this.#fail('Invalid Unicode escape');
+            if (!"0123456789abcdefABCDEF".includes(this.#peek())) this.#fail("Invalid Unicode escape");
             this.#offset++;
           }
         } else {
-          if (!'"\\/bfnrt'.includes(escape)) this.#fail('Invalid string escape');
+          if (!"\"\\/bfnrt".includes(escape)) this.#fail("Invalid string escape");
           this.#offset++;
         }
       } else {
-        if (byte < 0x20) this.#fail('Unescaped control character in string');
+        if (byte < 0x20) this.#fail("Unescaped control character in string");
         this.#scalar();
       }
     }
@@ -179,51 +179,51 @@ class Scanner {
     const token = this.#peek();
     let entry;
     switch (token) {
-      case '"':
-        entry = { type: 'string', value: this.#string() };
+      case "\"":
+        entry = { type: "string", value: this.#string() };
         break;
-      case '[': {
+      case "[": {
         this.#offset++;
         const values = [];
-        while (this.#peek() !== ']') values.push(this.#value());
+        while (this.#peek() !== "]") values.push(this.#value());
         this.#offset++;
-        entry = { type: 'tuple', values };
+        entry = { type: "tuple", values };
         break;
       }
-      case '{': {
+      case "{": {
         this.#offset++;
-        const keys = this.#reference('A');
-        const values = this.#reference('A');
-        this.#expect('}');
-        entry = { type: 'record', keys, values };
+        const keys = this.#reference("A");
+        const values = this.#reference("A");
+        this.#expect("}");
+        entry = { type: "record", keys, values };
         break;
       }
-      case '<': {
+      case "<": {
         this.#offset++;
-        const id = this.#reference('S');
-        const documentType = this.#reference('S');
-        this.#expect('>');
-        entry = { type: 'document', id, documentType };
+        const id = this.#reference("S");
+        const documentType = this.#reference("S");
+        this.#expect(">");
+        entry = { type: "document", id, documentType };
         break;
       }
-      case '(': {
+      case "(": {
         this.#offset++;
-        const document = this.#reference('D');
-        const metadata = this.#reference('O');
-        const data = this.#reference('O');
+        const document = this.#reference("D");
+        const metadata = this.#reference("O");
+        const data = this.#reference("O");
         const archived = this.#boolean();
-        this.#expect(')');
-        entry = { type: 'revision', document, metadata, data, archived };
+        this.#expect(")");
+        entry = { type: "revision", document, metadata, data, archived };
         break;
       }
-      case 'T':
-      case 'F':
-      case 'V':
+      case "T":
+      case "F":
+      case "V":
         entry = this.#value();
         break;
       default:
-        this.#fail('Expected store definition or primitive');
+        this.#fail("Expected store definition or primitive");
     }
-    return entry.type === 'revision' ? { ...entry, endOffset: this.#offset } : entry;
+    return entry.type === "revision" ? { ...entry, endOffset: this.#offset } : entry;
   }
 }
