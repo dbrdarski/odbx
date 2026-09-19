@@ -5,6 +5,7 @@ export { createEntity } from "./entities.mjs";
 export {
   Schema,
   Union,
+  UUID,
   validate,
   ValidationError,
 } from "./schema.mjs";

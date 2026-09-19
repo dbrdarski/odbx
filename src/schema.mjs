@@ -219,6 +219,21 @@ export const Union = (left, right) => {
   return validator
 }
 
+export const UUID = relationship => {
+  const validator = named("UUID", (id, run) => {
+    if (typeof id !== "string")
+      return typeMismatch(run, validator, id)
+
+    const ids = run.relationsMap.get(relationship) ?? new Set()
+    ids.add(id)
+    run.relationsMap.set(relationship, ids)
+
+    return true
+  })
+
+  return validator
+}
+
 export const validate = (schema, value) => {
   const run = createValidationRun()
 
