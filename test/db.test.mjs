@@ -3,17 +3,26 @@ import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DB, Record, Tuple } from "../src/index.mjs";
+import { createEntity, DB, Record, Tuple } from "../src/index.mjs";
 import { parse } from "../src/parser.mjs";
 
 const ids = revisions => revisions.map(({ id }) => id).sort();
+const definePost = schema => ({
+  post: createEntity(() => ({ relationships: {}, schema })),
+});
+const titleDefinitions = definePost(class Post {
+  title = String;
+});
+const versionDefinitions = definePost(class Post {
+  version = Number;
+});
 
 test("create, save and reopen a document", async t => {
   const directory = await mkdtemp(join(tmpdir(), "odbx-"));
   const filename = join(directory, "content.odbx");
-  const created = await DB.create(filename);
+  const created = await DB.create(filename, titleDefinitions);
 
-  const posts = created.createEntity("post");
+  const posts = created.entities.post;
   await assert.rejects(posts.create(Tuple()), /Document data must be a Record/);
   const firstData = Record({ title: "Hello" });
   const firstRevision = await posts.create(firstData);
@@ -22,8 +31,8 @@ test("create, save and reopen a document", async t => {
   const secondRevision = await posts.update(documentId, secondData, { from: firstRevision.id });
   await created.close();
 
-  const db = await DB.open(filename);
-  const reopenedPosts = db.createEntity("post");
+  const db = await DB.open(filename, titleDefinitions);
+  const reopenedPosts = db.entities.post;
   t.after(async () => {
     await db.close();
     // await rm(directory, { recursive: true, force: true });
@@ -58,8 +67,8 @@ test("create, save and reopen a document", async t => {
 test("archive filtering and restore survive reopening", async t => {
   const directory = await mkdtemp(join(tmpdir(), "odbx-archive-"));
   const filename = join(directory, "content.odbx");
-  const created = await DB.create(filename);
-  const posts = created.createEntity("post");
+  const created = await DB.create(filename, titleDefinitions);
+  const posts = created.entities.post;
   const archivedInitial = await posts.create(Record({ title: "Initial" }));
   const archivedDocumentId = archivedInitial.document.id;
   const edit = posts.update(
@@ -80,8 +89,8 @@ test("archive filtering and restore survive reopening", async t => {
   const [beforeRestore, restored] = await Promise.all([archiving, restoring]);
   await created.close();
 
-  const db = await DB.open(filename);
-  const reopenedPosts = db.createEntity("post");
+  const db = await DB.open(filename, titleDefinitions);
+  const reopenedPosts = db.entities.post;
   t.after(async () => {
     await db.close();
     await rm(directory, { recursive: true, force: true });
@@ -100,8 +109,8 @@ test("archive filtering and restore survive reopening", async t => {
 test("revision ancestry is independent of chronological order", async t => {
   const directory = await mkdtemp(join(tmpdir(), "odbx-ancestry-"));
   const filename = join(directory, "content.odbx");
-  const created = await DB.create(filename);
-  const posts = created.createEntity("post");
+  const created = await DB.create(filename, versionDefinitions);
+  const posts = created.entities.post;
   const first = await posts.create(Record({ version: 1 }));
   const documentId = first.document.id;
   const second = await posts.update(documentId, Record({ version: 2 }), { from: first.id });
@@ -109,8 +118,8 @@ test("revision ancestry is independent of chronological order", async t => {
   const branch = await posts.update(documentId, Record({ version: 4 }), { from: first.id });
   await created.close();
 
-  const db = await DB.open(filename);
-  const reopenedPosts = db.createEntity("post");
+  const db = await DB.open(filename, versionDefinitions);
+  const reopenedPosts = db.entities.post;
   t.after(async () => {
     await db.close();
     await rm(directory, { recursive: true, force: true });

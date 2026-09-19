@@ -30,13 +30,28 @@ and values are the same canonical value regardless of field insertion order.
 
 ## Creating a database
 
-`DB.create()` creates a new database file. `DB.open()` opens an existing one.
+Define the database's entity types in a JavaScript module. Its export names
+become the stored document types:
+
+```js
+// entities.mjs
+import { createEntity } from "odbx";
+
+export const post = createEntity(() => ({
+  schema: class Post {
+    title = String;
+  },
+}));
+```
+
+Pass the module when creating or opening the database:
 
 ```js
 import { DB, Record } from "odbx";
+import * as definitions from "./entities.mjs";
 
-const db = await DB.create("./content.odbx");
-const posts = db.createEntity("post");
+const db = await DB.create("./content.odbx", definitions);
+const posts = db.entities.post;
 
 const created = await posts.create(Record({ title: "First post" }));
 
@@ -44,8 +59,7 @@ console.log(created.id);          // Revision ID
 console.log(created.document.id); // Document ID
 ```
 
-`createEntity(name)` returns `create`, `update`, `archive`, and `restore`. The
-name becomes the type of Documents made by `create`:
+Each entity provides `create`, `update`, `archive`, and `restore`:
 
 ```js
 const updated = await posts.update(
@@ -96,8 +110,8 @@ its archive state.
 ```js
 await db.close();
 
-const reopened = await DB.open("./content.odbx");
-const reopenedPosts = reopened.createEntity("post");
+const reopened = await DB.open("./content.odbx", definitions);
+const reopenedPosts = reopened.entities.post;
 
 // Read or write through reopened and reopenedPosts.
 

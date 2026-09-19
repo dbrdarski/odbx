@@ -1,29 +1,41 @@
 import { open } from "node:fs/promises";
+import { resolveEntity } from "./entities.mjs";
 import { replay } from "./replay.mjs";
+import { Schema } from "./schema.mjs";
 import { createStores } from "./stores.mjs";
 import { createWriter } from "./writer.mjs";
 
-const createDatabase = async (file, bytes) => {
+const createDatabase = async (file, bytes, definitions) => {
   const stores = createStores();
-  const entities = Object.create(null);
-  const getEntity = type => entities[type] ??= {
-    histories: new Map(),
-    revisions: new Map(),
+  const definitionEntries = Object.entries(definitions);
+  definitionEntries.forEach(([, entity]) => resolveEntity(entity));
+  const entityStates = Object.create(null);
+  for (const [type, entity] of definitionEntries) {
+    const { createDocument } = stores.addDocumentType(type);
+    entityStates[type] = {
+      createDocument,
+      validator: Schema(resolveEntity(entity).schema),
+      histories: new Map(),
+      revisions: new Map(),
+    };
+  }
+  const getEntityState = type => {
+    const state = entityStates[type];
+    if (!state) throw Error(`Unknown document type: ${type}`);
+    return state;
   };
   const publish = revision => {
-    const entity = getEntity(revision.document.type);
-    const history = entity.histories.get(revision.document.id) ?? [];
-    entity.histories.set(revision.document.id, [...history, revision]);
-    entity.revisions.set(revision.id, revision);
+    const state = getEntityState(revision.document.type);
+    const history = state.histories.get(revision.document.id) ?? [];
+    state.histories.set(revision.document.id, [...history, revision]);
+    state.revisions.set(revision.id, revision);
     return revision;
   };
   const endOffset = bytes ? replay(stores, bytes, publish) : 0;
   if (bytes?.length > endOffset) await file.truncate(endOffset);
   const write = createWriter(stores, file, endOffset);
   const save = operation => write(operation).then(publish);
-  const createEntity = name => {
-    const { createDocument } = stores.addDocumentType(name);
-    const { histories, revisions } = getEntity(name);
+  const createFacade = ({ createDocument, histories, revisions }) => {
     const getRevisions = document => histories.get(document.id) ?? [];
     const latest = options => options?.id
       ? getRevisions(options).at(-1)
@@ -52,18 +64,25 @@ const createDatabase = async (file, bytes) => {
       revisions: getRevisions,
     };
   };
+  const entities = Object.create(null);
+  for (const [type, state] of Object.entries(entityStates)) {
+    entities[type] = createFacade(state);
+  }
 
   return {
-    createEntity,
+    entities,
     close: () => file.close(),
   };
 };
 
 export const DB = {
-  create: async filename => createDatabase(await open(filename, "wx+")),
-  open: filename => open(filename, "r+").then(file =>
+  create: (filename, definitions) => open(filename, "wx+").then(file =>
+    createDatabase(file, undefined, definitions)
+      .catch(error => file.close().then(() => Promise.reject(error))),
+  ),
+  open: (filename, definitions) => open(filename, "r+").then(file =>
     file.readFile()
-      .then(bytes => createDatabase(file, bytes))
+      .then(bytes => createDatabase(file, bytes, definitions))
       .catch(error => file.close().then(() => Promise.reject(error))),
   ),
 };
