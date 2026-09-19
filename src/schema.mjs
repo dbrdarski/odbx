@@ -15,15 +15,39 @@ const isClass = value =>
   typeof value === "function" &&
   /^\s*class\s+/.test(value.toString())
 
-const resolveValidator = value => {
-  if (value instanceof Tuple)
-    return createTupleValidator(value)
+const createTupleValidator = validator => (value, run) => {
+  if (!(value instanceof Tuple))
+    return typeMismatch(run, Tuple, value)
 
-  if (isClass(value))
-    return createClassValidator(value)
+  return (validator.length > value.length ? validator : value)
+    .reduce((valid, _, index) => {
+      const branch = run.branch(index)
 
-  if (typeof value === "function")
-    return value
+      if (index >= validator.length)
+        return branch.collect(
+          unexpected(branch, value[index])
+        )
+
+      if (index >= value.length)
+        return branch.collect(
+          missing(branch, validator[index])
+        )
+
+      return branch.collect(
+        Schema(validator[index])(value[index], branch)
+      ) && valid
+    }, true)
+}
+
+const resolveValidator = validator => {
+  if (validator instanceof Tuple)
+    return createTupleValidator(validator)
+
+  if (isClass(validator))
+    return createClassValidator(validator)
+
+  if (typeof validator === "function")
+    return validator
 
   throw new TypeError("Invalid schema")
 }
