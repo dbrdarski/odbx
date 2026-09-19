@@ -1,4 +1,4 @@
-import { Tuple } from "./values.mjs"
+import { Record, Tuple } from "./values.mjs"
 
 const primitive = type => value => typeof value === type
 
@@ -37,6 +37,36 @@ const createTupleValidator = validator => (value, run) => {
         Schema(validator[index])(value[index], branch)
       ) && valid
     }, true)
+}
+
+const createClassValidator = validator => {
+  const definition = Record(new validator())
+
+  return (value, run) => {
+    if (!(value instanceof Record))
+      return typeMismatch(run, Record, value)
+
+    return Array.from(new Set([
+      ...Record.keys(definition),
+      ...Record.keys(value),
+    ])).reduce((valid, key) => {
+      const branch = run.branch(key)
+
+      if (!Object.hasOwn(definition, key))
+        return branch.collect(
+          unexpected(branch, value[key])
+        )
+
+      if (!Object.hasOwn(value, key))
+        return branch.collect(
+          missing(branch, definition[key])
+        )
+
+      return branch.collect(
+        Schema(definition[key])(value[key], branch)
+      ) && valid
+    }, true)
+  }
 }
 
 const resolveValidator = validator => {
