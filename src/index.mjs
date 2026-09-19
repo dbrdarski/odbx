@@ -3,6 +3,7 @@ export { Record, Tuple } from "./values.mjs";
 export { decodeJSON, encodeJSON, fromJS } from "./wrappers.mjs";
 export {
   Schema,
+  Union,
   validate,
   ValidationError,
 } from "./schema.mjs";

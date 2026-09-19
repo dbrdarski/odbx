@@ -3,15 +3,22 @@ import { Record, Tuple } from "./values.mjs"
 const named = (name, validator) =>
   Object.defineProperty(validator, "name", { value: name })
 
-const withError = (errorType, validator) => (value, run) =>
-  validator(value) ||
-  errorType(run, validator, value)
+const withError = (errorType, predicate) => {
+  const validator = (value, run) =>
+    predicate(value) ||
+    errorType(run, validator, value)
+
+  return validator
+}
 
 const primitive = (constructor, type = typeof constructor()) => [
   constructor,
-  withError(
-    typeMismatch,
-    named(constructor.name, value => typeof value === type)
+  named(
+    constructor.name,
+    withError(
+      typeMismatch,
+      value => typeof value === type
+    )
   ),
 ]
 
@@ -49,9 +56,9 @@ const resolvedValidators = new Map([
   primitive(Number),
   [
     null,
-    withError(
-      typeMismatch,
-      named("null", nullValidator)
+    named(
+      "null",
+      withError(typeMismatch, nullValidator)
     ),
   ],
 ])
@@ -177,6 +184,40 @@ const createValidationRun = (
     ? result
     : (errors.push(result), false),
 })
+
+const mergeRelations = (target, source) =>
+  source.forEach((values, relation) =>
+    target.set(relation, new Set([
+      ...(target.get(relation) ?? []),
+      ...values,
+    ])))
+
+const validateAlternative = (schema, value, run) => {
+  const alternative = createValidationRun(run.path)
+  const valid = alternative.collect(
+    Schema(schema)(value, alternative)
+  )
+
+  if (valid)
+    mergeRelations(run.relationsMap, alternative.relationsMap)
+
+  return valid
+}
+
+const validatorName = validator =>
+  validator?.name || Schema(validator).name
+
+export const Union = (left, right) => {
+  const validator = named(
+    `${validatorName(left)} | ${validatorName(right)}`,
+    (value, run) =>
+      validateAlternative(left, value, run) ||
+      validateAlternative(right, value, run) ||
+      typeMismatch(run, validator, value)
+  )
+
+  return validator
+}
 
 export const validate = (schema, value) => {
   const run = createValidationRun()
