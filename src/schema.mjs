@@ -136,3 +136,46 @@ export const Schema = value => resolvedValidators.get(value)
   ?? resolvedValidators
     .set(value, resolveValidator(value))
     .get(value)
+
+export class ValidationError extends Error {
+  constructor(errors) {
+    super()
+    this.errors = Tuple(...errors)
+  }
+}
+
+const createValidationRun = (
+  path = Tuple(),
+  errors = [],
+  relationsMap = new Map()
+) => ({
+  path,
+  errors,
+  relationsMap,
+
+  branch: key =>
+    createValidationRun(
+      Tuple(...path, key),
+      errors,
+      relationsMap
+    ),
+
+  collect: result => typeof result === "boolean"
+    ? result
+    : (errors.push(result), false),
+})
+
+export const validate = (schema, value) => {
+  const run = createValidationRun()
+
+  run.collect(
+    Schema(schema)(value, run)
+  )
+
+  return [
+    run.errors.length
+      ? new ValidationError(run.errors)
+      : true,
+    run.relationsMap,
+  ]
+}
