@@ -1,4 +1,4 @@
-const definition = Symbol()
+const definitionSymbol = Symbol()
 
 const relation = (kind, source, target) =>
   Object.freeze({ kind, source, target })
@@ -10,7 +10,7 @@ const relationships = source => ({
   hasMany: target => relation("hasMany", source, target),
 })
 
-export const resolveEntity = entity => entity[definition]
+export const resolveEntity = entity => entity[definitionSymbol]
 
 export const createEntity = factory => {
   const state = {}
@@ -18,13 +18,13 @@ export const createEntity = factory => {
   const entity = new Proxy(target, {
     get: (target, property) => {
       if (!state.definition) {
-        const value = factory(relationships(entity))
-        Object.assign(target, value.relationships)
+        const definition = factory(relationships(entity))
+        Object.assign(target, definition.relationships)
         Object.freeze(target)
-        state.definition = value
+        state.definition = definition
       }
 
-      return property === definition
+      return property === definitionSymbol
         ? state.definition
         : target[property]
     },
