@@ -21,9 +21,8 @@ const isClass = value =>
   typeof value === "function" &&
   /^\s*class\s+/.test(value.toString())
 
-const describe = value => value == null
-  ? String(value)
-  : Object.getPrototypeOf(value).constructor.name
+const describe = value =>
+  value?.constructor?.name ?? String(value)
 
 const validationError = (code, run, details) =>
   Record({ code, path: run.path, ...details })
