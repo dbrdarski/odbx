@@ -3,19 +3,19 @@ import { Record, Tuple } from "./values.mjs"
 const named = (name, validator) =>
   Object.defineProperty(validator, "name", { value: name })
 
+const withError = (errorType, validator) => (value, run) =>
+  validator(value) ||
+  errorType(run, validator, value)
+
 const primitive = (constructor, type = typeof constructor()) => [
   constructor,
-  named(constructor.name, value => typeof value === type),
+  withError(
+    typeMismatch,
+    named(constructor.name, value => typeof value === type)
+  ),
 ]
 
 const nullValidator = value => value === null
-
-const resolvedValidators = new Map([
-  primitive(String),
-  primitive(Boolean),
-  primitive(Number),
-  [null, named("null", nullValidator)],
-])
 
 const isClass = value =>
   typeof value === "function" &&
@@ -42,6 +42,19 @@ const unexpected = (run, received) =>
   validationError("unexpected", run, {
     received: describe(received),
   })
+
+const resolvedValidators = new Map([
+  primitive(String),
+  primitive(Boolean),
+  primitive(Number),
+  [
+    null,
+    withError(
+      typeMismatch,
+      named("null", nullValidator)
+    ),
+  ],
+])
 
 const tupleName = validators =>
   `[${Array.from(validators, validator => validator.name).join(", ")}]`
