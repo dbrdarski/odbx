@@ -39,6 +39,19 @@ const createTupleValidator = validator => (value, run) => {
     }, true)
 }
 
+Tuple.of = validator => (value, run) => {
+  if (!(value instanceof Tuple))
+    return typeMismatch(run, Tuple, value)
+
+  return value.reduce((valid, item, index) => {
+    const branch = run.branch(index)
+
+    return branch.collect(
+      Schema(validator)(item, branch)
+    ) && valid
+  }, true)
+}
+
 const createClassValidator = validator => {
   const definition = Record(new validator())
 
