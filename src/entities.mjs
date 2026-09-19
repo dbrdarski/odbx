@@ -13,20 +13,17 @@ const relationships = source => ({
 export const resolveEntity = entity => entity[definitionSymbol]
 
 export const createEntity = factory => {
-  const state = {}
   const target = Object.create(null)
   const entity = new Proxy(target, {
     get: (target, property) => {
-      if (!state.definition) {
+      if (!target[definitionSymbol]) {
         const definition = factory(relationships(entity))
         Object.assign(target, definition.relationships)
+        target[definitionSymbol] = definition
         Object.freeze(target)
-        state.definition = definition
       }
 
-      return property === definitionSymbol
-        ? state.definition
-        : target[property]
+      return target[property]
     },
   })
 
