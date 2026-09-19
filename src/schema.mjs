@@ -15,6 +15,29 @@ const isClass = value =>
   typeof value === "function" &&
   /^\s*class\s+/.test(value.toString())
 
+const describe = value => value === null
+  ? "null"
+  : value?.name || value?.constructor?.name || typeof value
+
+const validationError = (code, run, details) =>
+  Record({ code, path: run.path, ...details })
+
+const typeMismatch = (run, expected, received) =>
+  validationError("type", run, {
+    expected: describe(expected),
+    received: describe(received),
+  })
+
+const missing = (run, expected) =>
+  validationError("missing", run, {
+    expected: describe(expected),
+  })
+
+const unexpected = (run, received) =>
+  validationError("unexpected", run, {
+    received: describe(received),
+  })
+
 const createTupleValidator = validator => (value, run) => {
   if (!(value instanceof Tuple))
     return typeMismatch(run, Tuple, value)
