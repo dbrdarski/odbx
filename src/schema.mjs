@@ -1,36 +1,42 @@
 import { Record, Tuple } from "./values.mjs"
 
-const primitive = type => value => typeof value === type
+const named = (name, validator) =>
+  Object.defineProperty(validator, "name", { value: name })
+
+const primitive = (constructor, type = typeof constructor()) => [
+  constructor,
+  named(constructor.name, value => typeof value === type),
+]
 
 const nullValidator = value => value === null
 
 const resolvedValidators = new Map([
-  [String, primitive("string")],
-  [Boolean, primitive("boolean")],
-  [Number, primitive("number")],
-  [null, nullValidator],
+  primitive(String),
+  primitive(Boolean),
+  primitive(Number),
+  [null, named("null", nullValidator)],
 ])
 
 const isClass = value =>
   typeof value === "function" &&
   /^\s*class\s+/.test(value.toString())
 
-const describe = value => value === null
-  ? "null"
-  : value?.name || value?.constructor?.name || typeof value
+const describe = value => value == null
+  ? String(value)
+  : Object.getPrototypeOf(value).constructor.name
 
 const validationError = (code, run, details) =>
   Record({ code, path: run.path, ...details })
 
 const typeMismatch = (run, expected, received) =>
   validationError("type", run, {
-    expected: describe(expected),
+    expected: expected.name,
     received: describe(received),
   })
 
 const missing = (run, expected) =>
   validationError("missing", run, {
-    expected: describe(expected),
+    expected: expected.name,
   })
 
 const unexpected = (run, received) =>
@@ -38,47 +44,56 @@ const unexpected = (run, received) =>
     received: describe(received),
   })
 
-const createTupleValidator = validator => (value, run) => {
-  if (!(value instanceof Tuple))
-    return typeMismatch(run, Tuple, value)
+const tupleName = validators =>
+  `[${Array.from(validators, validator => validator.name).join(", ")}]`
 
-  return (validator.length > value.length ? validator : value)
-    .reduce((valid, _, index) => {
+const createTupleValidator = validator => named(
+  tupleName(validator),
+  (value, run) => {
+    if (!(value instanceof Tuple))
+      return typeMismatch(run, Tuple, value)
+
+    return (validator.length > value.length ? validator : value)
+      .reduce((valid, _, index) => {
+        const branch = run.branch(index)
+
+        if (index >= validator.length)
+          return branch.collect(
+            unexpected(branch, value[index])
+          )
+
+        if (index >= value.length)
+          return branch.collect(
+            missing(branch, validator[index])
+          )
+
+        return branch.collect(
+          Schema(validator[index])(value[index], branch)
+        ) && valid
+      }, true)
+  }
+)
+
+Tuple.of = validator => named(
+  `${validator.name}[]`,
+  (value, run) => {
+    if (!(value instanceof Tuple))
+      return typeMismatch(run, Tuple, value)
+
+    return value.reduce((valid, item, index) => {
       const branch = run.branch(index)
 
-      if (index >= validator.length)
-        return branch.collect(
-          unexpected(branch, value[index])
-        )
-
-      if (index >= value.length)
-        return branch.collect(
-          missing(branch, validator[index])
-        )
-
       return branch.collect(
-        Schema(validator[index])(value[index], branch)
+        Schema(validator)(item, branch)
       ) && valid
     }, true)
-}
-
-Tuple.of = validator => (value, run) => {
-  if (!(value instanceof Tuple))
-    return typeMismatch(run, Tuple, value)
-
-  return value.reduce((valid, item, index) => {
-    const branch = run.branch(index)
-
-    return branch.collect(
-      Schema(validator)(item, branch)
-    ) && valid
-  }, true)
-}
+  }
+)
 
 const createClassValidator = validator => {
   const definition = Record(new validator())
 
-  return (value, run) => {
+  return named(validator.name, (value, run) => {
     if (!(value instanceof Record))
       return typeMismatch(run, Record, value)
 
@@ -102,7 +117,7 @@ const createClassValidator = validator => {
         Schema(definition[key])(value[key], branch)
       ) && valid
     }, true)
-  }
+  })
 }
 
 const resolveValidator = validator => {
