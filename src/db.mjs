@@ -4,6 +4,17 @@ import { Schema, validate } from "./schema.mjs";
 import { createStores } from "./stores.mjs";
 import { createWriter } from "./writer.mjs";
 
+const publishRevision =
+  (histories, revisions, relationshipSnapshots) =>
+    ([revision, relationsMap]) => {
+      const history = histories.get(revision.document.id) ?? [];
+      history.push(revision);
+      histories.set(revision.document.id, history);
+      revisions.set(revision.id, revision);
+      relationshipSnapshots.set(revision.document.id, relationsMap);
+      return revision;
+    };
+
 const createDatabase = async (file, bytes, definitions) => {
   const stores = createStores();
   const definitionEntries = Object.entries(definitions);
@@ -11,11 +22,16 @@ const createDatabase = async (file, bytes, definitions) => {
   const entityStates = Object.create(null);
   for (const [type, entity] of definitionEntries) {
     const { createDocument } = stores.addDocumentType(type);
+    const histories = new Map();
+    const revisions = new Map();
+    const relationshipSnapshots = new Map();
     entityStates[type] = {
       createDocument,
       validator: Schema(entity().schema),
-      histories: new Map(),
-      revisions: new Map(),
+      histories,
+      revisions,
+      relationshipSnapshots,
+      publish: publishRevision(histories, revisions, relationshipSnapshots),
     };
   }
   const getEntityState = type => {
@@ -23,24 +39,17 @@ const createDatabase = async (file, bytes, definitions) => {
     if (!state) throw Error(`Unknown document type: ${type}`);
     return state;
   };
-  const publish = revision => {
-    const state = getEntityState(revision.document.type);
-    const history = state.histories.get(revision.document.id) ?? [];
-    state.histories.set(revision.document.id, [...history, revision]);
-    state.revisions.set(revision.id, revision);
-    return revision;
-  };
   const replayRevision = revision => {
-    const { validator } = getEntityState(revision.document.type);
-    const [validationResult] = validate(validator, revision.data);
+    const { validator, publish } = getEntityState(revision.document.type);
+    const [validationResult, relationsMap] = validate(validator, revision.data);
     if (validationResult !== true) throw validationResult;
-    return publish(revision);
+    return publish([revision, relationsMap]);
   };
   const endOffset = bytes ? replay(stores, bytes, replayRevision) : 0;
   if (bytes?.length > endOffset) await file.truncate(endOffset);
   const write = createWriter(stores, file, endOffset);
-  const save = operation => write(operation).then(publish);
-  const createFacade = ({ createDocument, validator, histories, revisions }) => {
+  const createFacade = ({ createDocument, validator, histories, revisions, publish }) => {
+    const save = operation => write(operation).then(publish);
     const getRevisions = document => histories.get(document.id) ?? [];
     const latest = options => options?.id
       ? getRevisions(options).at(-1)
@@ -49,9 +58,9 @@ const createDatabase = async (file, bytes, definitions) => {
       );
     const createRevision = (document, options) => {
       const revision = stores.createRevision(document, options);
-      const [validationResult] = validate(validator, revision.data);
+      const [validationResult, relationsMap] = validate(validator, revision.data);
       if (validationResult !== true) throw validationResult;
-      return revision;
+      return [revision, relationsMap];
     };
     const setArchived = (id, archived) => save(() => {
       const revision = latest({ id });

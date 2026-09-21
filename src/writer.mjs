@@ -8,8 +8,8 @@ export function createWriter(stores, file, position = 0) {
     payload => persist(file, payload, position).then(next => position = next),
   );
   return operation => commit(write => {
-    const revision = operation();
+    const [revision, relationsMap] = operation();
     revisionStore.getKey(write, revision);
-    return revision;
+    return [revision, relationsMap];
   });
 }
