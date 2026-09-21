@@ -1,5 +1,4 @@
 import { open } from "node:fs/promises";
-import { resolveEntity } from "./entities.mjs";
 import { replay } from "./replay.mjs";
 import { Schema } from "./schema.mjs";
 import { createStores } from "./stores.mjs";
@@ -8,13 +7,13 @@ import { createWriter } from "./writer.mjs";
 const createDatabase = async (file, bytes, definitions) => {
   const stores = createStores();
   const definitionEntries = Object.entries(definitions);
-  definitionEntries.forEach(([, entity]) => resolveEntity(entity));
+  definitionEntries.forEach(([, entity]) => entity());
   const entityStates = Object.create(null);
   for (const [type, entity] of definitionEntries) {
     const { createDocument } = stores.addDocumentType(type);
     entityStates[type] = {
       createDocument,
-      validator: Schema(resolveEntity(entity).schema),
+      validator: Schema(entity().schema),
       histories: new Map(),
       revisions: new Map(),
     };
