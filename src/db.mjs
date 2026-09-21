@@ -30,7 +30,13 @@ const createDatabase = async (file, bytes, definitions) => {
     state.revisions.set(revision.id, revision);
     return revision;
   };
-  const endOffset = bytes ? replay(stores, bytes, publish) : 0;
+  const replayRevision = revision => {
+    const { validator } = getEntityState(revision.document.type);
+    const [validationResult] = validate(validator, revision.data);
+    if (validationResult !== true) throw validationResult;
+    return publish(revision);
+  };
+  const endOffset = bytes ? replay(stores, bytes, replayRevision) : 0;
   if (bytes?.length > endOffset) await file.truncate(endOffset);
   const write = createWriter(stores, file, endOffset);
   const save = operation => write(operation).then(publish);
