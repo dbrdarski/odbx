@@ -59,11 +59,10 @@ const createDatabase = async (file, bytes, definitions) => {
   const validateRevision = (validator, revision) =>
     validate(validator, revision.data, validateReference(revision));
   const createRelationship = relationship => {
-    const inverse = relationship.kind === "hasOne" || relationship.kind === "hasMany";
-    const owning = inverse ? relationship.target : relationship;
+    const owning = relationship.inverse ? relationship.target : relationship;
     const source = statesByEntity.get(owning.source);
-    const target = statesByEntity.get(inverse ? owning.source : owning.target);
-    const related = inverse
+    const target = statesByEntity.get(relationship.inverse ? owning.source : owning.target);
+    const related = relationship.inverse
       ? (sourceId, targetId) =>
         source.relationshipSnapshots.get(targetId)?.get(owning)?.has(sourceId)
       : (sourceId, targetId) =>
