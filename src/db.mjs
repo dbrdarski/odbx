@@ -26,7 +26,7 @@ const createDatabase = async (file, bytes, definitions) => {
     const histories = new Map();
     const revisions = new Map();
     const relationshipSnapshots = new Map();
-    const state = {
+    const state = entityStates[type] = {
       createDocument,
       validator: Schema(entity().schema),
       histories,
@@ -34,7 +34,6 @@ const createDatabase = async (file, bytes, definitions) => {
       relationshipSnapshots,
       publish: publishRevision(histories, revisions, relationshipSnapshots),
     };
-    entityStates[type] = state;
     statesByEntity.set(entity, state);
   }
   const getEntityState = type => {
