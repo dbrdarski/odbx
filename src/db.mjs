@@ -58,6 +58,30 @@ const createDatabase = async (file, bytes, definitions) => {
   };
   const validateRevision = (validator, revision) =>
     validate(validator, revision.data, validateReference(revision));
+  const createRelationship = relationship => {
+    const inverse = relationship.kind === "hasOne" || relationship.kind === "hasMany";
+    const owning = inverse ? relationship.target : relationship;
+    const source = statesByEntity.get(owning.source);
+    const target = statesByEntity.get(inverse ? owning.source : owning.target);
+    const related = inverse
+      ? (sourceId, targetId) =>
+        source.relationshipSnapshots.get(targetId)?.get(owning)?.has(sourceId)
+      : (sourceId, targetId) =>
+        source.relationshipSnapshots.get(sourceId)?.get(owning)?.has(targetId);
+    const single = relationship.kind === "belongsToOne" || relationship.kind === "hasOne";
+    return {
+      latest: (sourceId, options) => {
+        const revisions = Array.from(target.histories)
+          .filter(([targetId]) => related(sourceId, targetId))
+          .map(([, history]) => history.at(-1))
+          .filter(revision =>
+            options?.archived === null ||
+            revision.archived === (options?.archived ?? false)
+          );
+        return single ? revisions[0] ?? null : revisions;
+      },
+    };
+  };
   const replayRevision = revision => {
     const { validator, publish } = getEntityState(revision.document.type);
     const [validationResult, relationsMap] = validateRevision(validator, revision);
@@ -104,8 +128,13 @@ const createDatabase = async (file, bytes, definitions) => {
     };
   };
   const entities = Object.create(null);
-  for (const [type, state] of Object.entries(entityStates)) {
-    entities[type] = createFacade(state);
+  for (const [type, entity] of definitionEntries) {
+    entities[type] = {
+      ...createFacade(entityStates[type]),
+      ...Object.fromEntries(Object.entries(entity().relationships).map(
+        ([name, relationship]) => [name, createRelationship(relationship)],
+      )),
+    };
   }
 
   return {
