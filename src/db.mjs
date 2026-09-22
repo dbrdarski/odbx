@@ -68,17 +68,19 @@ const createDatabase = async (file, bytes, definitions) => {
       : (sourceId, targetId) =>
         source.relationshipSnapshots.get(sourceId)?.get(owning)?.has(targetId);
     const single = relationship.kind === "belongsToOne" || relationship.kind === "hasOne";
+    const histories = (sourceId, options) => Array.from(target.histories)
+      .filter(([targetId, history]) =>
+        related(sourceId, targetId) &&
+        (options?.archived === null ||
+          history.at(-1).archived === (options?.archived ?? false))
+      )
+      .map(([, history]) => history);
     return {
       latest: (sourceId, options) => {
-        const revisions = Array.from(target.histories)
-          .filter(([targetId]) => related(sourceId, targetId))
-          .map(([, history]) => history.at(-1))
-          .filter(revision =>
-            options?.archived === null ||
-            revision.archived === (options?.archived ?? false)
-          );
+        const revisions = histories(sourceId, options).map(history => history.at(-1));
         return single ? revisions[0] ?? null : revisions;
       },
+      revisions: (sourceId, options) => histories(sourceId, options).flat(),
     };
   };
   const replayRevision = revision => {
