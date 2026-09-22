@@ -48,12 +48,11 @@ const createDatabase = async (file, bytes, definitions) => {
   const validateReference = revision => (relationship, id) => {
     const target = statesByEntity.get(relationship.target);
     if (!target?.histories.has(id)) return false;
-    if (revision.archived || !hasOne(relationship)) return true;
+    if (!hasOne(relationship)) return true;
     const source = statesByEntity.get(relationship.source);
     return Array.from(source.relationshipSnapshots).every(
       ([documentId, relationships]) =>
         documentId === revision.document.id ||
-        source.histories.get(documentId).at(-1).archived ||
         !relationships.get(relationship)?.has(id),
     );
   };
