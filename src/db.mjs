@@ -97,7 +97,7 @@ const createDatabase = async (file, bytes, definitions) => {
 
 export const DB = {
   create: (filename, definitions) => open(filename, "wx+").then(file =>
-    createDatabase(file, undefined, definitions)
+    createDatabase(file, null, definitions)
       .catch(error => file.close().then(() => Promise.reject(error))),
   ),
   open: (filename, definitions) => open(filename, "r+").then(file =>
