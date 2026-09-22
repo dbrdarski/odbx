@@ -20,12 +20,13 @@ const createDatabase = async (file, bytes, definitions) => {
   const definitionEntries = Object.entries(definitions);
   definitionEntries.forEach(([, entity]) => entity());
   const entityStates = Object.create(null);
+  const statesByEntity = new Map();
   for (const [type, entity] of definitionEntries) {
     const { createDocument } = stores.addDocumentType(type);
     const histories = new Map();
     const revisions = new Map();
     const relationshipSnapshots = new Map();
-    entityStates[type] = {
+    const state = {
       createDocument,
       validator: Schema(entity().schema),
       histories,
@@ -33,15 +34,35 @@ const createDatabase = async (file, bytes, definitions) => {
       relationshipSnapshots,
       publish: publishRevision(histories, revisions, relationshipSnapshots),
     };
+    entityStates[type] = state;
+    statesByEntity.set(entity, state);
   }
   const getEntityState = type => {
     const state = entityStates[type];
     if (!state) throw Error(`Unknown document type: ${type}`);
     return state;
   };
+  const hasOne = relationship =>
+    Object.values(relationship.target().relationships).some(
+      inverse => inverse.kind === "hasOne" && inverse.target === relationship,
+    );
+  const validateReference = revision => (relationship, id) => {
+    const target = statesByEntity.get(relationship.target);
+    if (!target?.histories.has(id)) return false;
+    if (revision.archived || !hasOne(relationship)) return true;
+    const source = statesByEntity.get(relationship.source);
+    return Array.from(source.relationshipSnapshots).every(
+      ([documentId, relationships]) =>
+        documentId === revision.document.id ||
+        source.histories.get(documentId).at(-1).archived ||
+        !relationships.get(relationship)?.has(id),
+    );
+  };
+  const validateRevision = (validator, revision) =>
+    validate(validator, revision.data, validateReference(revision));
   const replayRevision = revision => {
     const { validator, publish } = getEntityState(revision.document.type);
-    const [validationResult, relationsMap] = validate(validator, revision.data);
+    const [validationResult, relationsMap] = validateRevision(validator, revision);
     if (validationResult !== true) throw validationResult;
     return publish([revision, relationsMap]);
   };
@@ -58,7 +79,7 @@ const createDatabase = async (file, bytes, definitions) => {
       );
     const createRevision = (document, options) => {
       const revision = stores.createRevision(document, options);
-      const [validationResult, relationsMap] = validate(validator, revision.data);
+      const [validationResult, relationsMap] = validateRevision(validator, revision);
       if (validationResult !== true) throw validationResult;
       return [revision, relationsMap];
     };

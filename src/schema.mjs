@@ -24,6 +24,8 @@ const primitive = (constructor, type = typeof constructor()) => [
 
 const nullValidator = value => value === null
 
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
 const isClass = value =>
   typeof value === "function" &&
   /^\s*class\s+/.test(value.toString())
@@ -48,6 +50,12 @@ const missing = (run, expected) =>
 const unexpected = (run, received) =>
   validationError("unexpected", run, {
     received: describe(received),
+  })
+
+const invalidRelationship = (run, relationship, id) =>
+  validationError("relationship", run, {
+    relationship: relationship.kind,
+    id,
   })
 
 const resolvedValidators = new Map([
@@ -165,19 +173,25 @@ export class ValidationError extends Error {
 }
 
 const createValidationRun = (
+  validateReference = null,
   path = Tuple(),
   errors = [],
-  relationsMap = new Map()
+  relationsMap = new Map(),
+  relationshipReferences = []
 ) => ({
   path,
   errors,
   relationsMap,
+  relationshipReferences,
+  validateReference,
 
   branch: key =>
     createValidationRun(
+      validateReference,
       Tuple(...path, key),
       errors,
-      relationsMap
+      relationsMap,
+      relationshipReferences
     ),
 
   collect: result => typeof result === "boolean"
@@ -192,14 +206,29 @@ const mergeRelations = (target, source) =>
       ...values,
     ])))
 
+const validateRelationships = run =>
+  run.relationshipReferences.reduce((valid, { relationship, id, path }) =>
+    relationship.kind !== "belongsToOne" ||
+    run.relationsMap.get(relationship).size <= 1
+      ? valid
+      : (run.errors.push(
+        invalidRelationship({ path }, relationship, id)
+      ), false), true)
+
 const validateAlternative = (schema, value, run) => {
-  const alternative = createValidationRun(run.path)
-  const valid = alternative.collect(
+  const alternative = createValidationRun(
+    run.validateReference,
+    run.path
+  )
+  const result = alternative.collect(
     Schema(schema)(value, alternative)
   )
+  const valid = validateRelationships(alternative) && result
 
-  if (valid)
+  if (valid) {
     mergeRelations(run.relationsMap, alternative.relationsMap)
+    run.relationshipReferences.push(...alternative.relationshipReferences)
+  }
 
   return valid
 }
@@ -221,25 +250,29 @@ export const Union = (left, right) => {
 
 export const UUID = relationship => {
   const validator = named("UUID", (id, run) => {
-    if (typeof id !== "string")
+    if (typeof id !== "string" || !uuid.test(id))
       return typeMismatch(run, validator, id)
 
     const ids = run.relationsMap.get(relationship) ?? new Set()
     ids.add(id)
     run.relationsMap.set(relationship, ids)
+    run.relationshipReferences.push({ relationship, id, path: run.path })
 
-    return true
+    return !run.validateReference || run.validateReference(relationship, id)
+      ? true
+      : invalidRelationship(run, relationship, id)
   })
 
   return validator
 }
 
-export const validate = (schema, value) => {
-  const run = createValidationRun()
+export const validate = (schema, value, validateReference = null) => {
+  const run = createValidationRun(validateReference)
 
   run.collect(
     Schema(schema)(value, run)
   )
+  validateRelationships(run)
 
   return [
     run.errors.length
