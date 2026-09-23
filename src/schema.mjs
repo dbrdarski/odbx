@@ -38,13 +38,13 @@ const validationError = (code, run, details) =>
 
 const typeMismatch = (run, expected, received) =>
   validationError("type", run, {
-    expected: expected?.name,
+    expected: expected.name,
     received: describe(received),
   })
 
 const missing = (run, expected) =>
   validationError("missing", run, {
-    expected: expected?.name,
+    expected: expected.name,
   })
 
 const unexpected = (run, received) =>
@@ -72,7 +72,7 @@ const resolvedValidators = new Map([
 ])
 
 const tupleName = validators =>
-  `[${Array.from(validators, validator => validator?.name).join(", ")}]`
+  `[${Array.from(validators, validator => validator.name).join(", ")}]`
 
 const createTupleValidator = validator => {
   validator = Tuple(...Array.from(validator, Schema))
@@ -109,7 +109,7 @@ Tuple.of = validator => {
   validator = Schema(validator)
 
   return named(
-    `${validator?.name}[]`,
+    `${validator.name}[]`,
     (value, run) => {
       if (!(value instanceof Tuple))
         return typeMismatch(run, Tuple, value)
@@ -126,7 +126,7 @@ Tuple.of = validator => {
 }
 
 const createClassValidator = validator => {
-  const validate = named(validator?.name, (value, run) => {
+  const validate = named(validator.name, (value, run) => {
     if (!(value instanceof Record))
       return typeMismatch(run, Record, value)
 
@@ -254,7 +254,7 @@ export const Union = (left, right) => {
   right = Schema(right)
 
   const validator = named(
-    `${left?.name} | ${right?.name}`,
+    `${left.name} | ${right.name}`,
     (value, run) =>
       validateAlternative(left, value, run) ||
       validateAlternative(right, value, run) ||
