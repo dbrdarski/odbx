@@ -28,77 +28,115 @@ const tag = createEntity(({ hasMany }) => ({
 
 const definitions = { post, tag }
 
-test("relationship reads follow current membership across replay", async t => {
+const createFixture = async t => {
   const directory = await mkdtemp(join(tmpdir(), "odbx-relationships-"))
   const filename = join(directory, "content.odbx")
-  const created = await DB.create(filename, definitions)
-  const tags = created.entities.tag
-  const posts = created.entities.post
-  const firstTag = await tags.create(Record({ name: "First" }))
-  const secondTag = await tags.create(Record({ name: "Second" }))
-  const editedTag = await tags.update(
+  const databases = []
+  const connect = method => method(filename, definitions).then(database =>
+    (databases.push(database), database))
+
+  t.after(async () => {
+    await Promise.allSettled(databases.map(database => database.close()))
+    await rm(directory, { recursive: true, force: true })
+  })
+
+  return {
+    create: () => connect(DB.create),
+    open: () => connect(DB.open),
+  }
+}
+
+test("relationship reads follow current membership", async t => {
+  const fixture = await createFixture(t)
+  const { entities } = await fixture.create()
+  const firstTag = await entities.tag.create(Record({ name: "First" }))
+  const secondTag = await entities.tag.create(Record({ name: "Second" }))
+  const editedTag = await entities.tag.update(
     secondTag.document.id,
     Record({ name: "Second edited" }),
     { from: secondTag.id },
   )
-  const firstPost = await posts.create(Record({
+  const firstPost = await entities.post.create(Record({
     title: "Post",
     tags: Tuple(firstTag.document.id),
   }))
 
-  assert.deepEqual(posts.tags.latest(firstPost.document.id), [firstTag])
-  assert.deepEqual(tags.posts.latest(firstTag.document.id), [firstPost])
+  assert.deepEqual(entities.post.tags.latest(firstPost.document.id), [firstTag])
+  assert.deepEqual(entities.tag.posts.latest(firstTag.document.id), [firstPost])
 
-  const editedPost = await posts.update(
+  const editedPost = await entities.post.update(
     firstPost.document.id,
     Record({ title: "Post", tags: Tuple(secondTag.document.id) }),
     { from: firstPost.id },
   )
 
-  assert.deepEqual(tags.posts.latest(firstTag.document.id), [])
-  assert.deepEqual(tags.posts.latest(secondTag.document.id), [editedPost])
+  assert.deepEqual(entities.tag.posts.latest(firstTag.document.id), [])
+  assert.deepEqual(entities.tag.posts.latest(secondTag.document.id), [editedPost])
   assert.deepEqual(
-    posts.tags.revisions(firstPost.document.id).map(({ id }) => id),
+    entities.post.tags.revisions(firstPost.document.id).map(({ id }) => id),
     [secondTag.id, editedTag.id],
   )
+})
 
-  const archivedTag = await tags.archive(secondTag.document.id)
+test("relationship reads apply archive filters", async t => {
+  const fixture = await createFixture(t)
+  const { entities } = await fixture.create()
+  const tagRevision = await entities.tag.create(Record({ name: "Tag" }))
+  const postRevision = await entities.post.create(Record({
+    title: "Post",
+    tags: Tuple(tagRevision.document.id),
+  }))
+  const archivedTag = await entities.tag.archive(tagRevision.document.id)
 
-  assert.deepEqual(posts.tags.latest(firstPost.document.id), [])
+  assert.deepEqual(entities.post.tags.latest(postRevision.document.id), [])
   assert.deepEqual(
-    posts.tags.latest(firstPost.document.id, { archived: true }),
+    entities.post.tags.latest(postRevision.document.id, { archived: true }),
     [archivedTag],
   )
   assert.deepEqual(
-    posts.tags.latest(firstPost.document.id, { archived: null }),
+    entities.post.tags.latest(postRevision.document.id, { archived: null }),
     [archivedTag],
   )
+})
 
+test("relationship reads survive replay", async t => {
+  const fixture = await createFixture(t)
+  const created = await fixture.create()
+  const tagRevision = await created.entities.tag.create(Record({ name: "Tag" }))
+  const editedTag = await created.entities.tag.update(
+    tagRevision.document.id,
+    Record({ name: "Tag edited" }),
+    { from: tagRevision.id },
+  )
+  const postRevision = await created.entities.post.create(Record({
+    title: "Post",
+    tags: Tuple(tagRevision.document.id),
+  }))
+  const archivedTag = await created.entities.tag.archive(tagRevision.document.id)
   await created.close()
 
-  const reopened = await DB.open(filename, definitions)
-  t.after(async () => {
-    await reopened.close()
-    await rm(directory, { recursive: true, force: true })
-  })
+  const reopened = await fixture.open()
 
-  assert.deepEqual(reopened.entities.tag.posts.latest(firstTag.document.id), [])
-  assert.equal(
-    reopened.entities.tag.posts.latest(secondTag.document.id)[0].id,
-    editedPost.id,
+  assert.deepEqual(
+    reopened.entities.tag.posts
+      .latest(tagRevision.document.id)
+      .map(({ id }) => id),
+    [postRevision.id],
   )
   assert.deepEqual(
     reopened.entities.post.tags
-      .revisions(firstPost.document.id, { archived: null })
+      .revisions(postRevision.document.id, { archived: null })
       .map(({ id }) => id),
-    [secondTag.id, editedTag.id, archivedTag.id],
+    [tagRevision.id, editedTag.id, archivedTag.id],
   )
-  assert.deepEqual(reopened.entities.post.tags.latest(firstPost.document.id), [])
-  assert.equal(
-    reopened.entities.post.tags.latest(
-      firstPost.document.id,
-      { archived: true },
-    )[0].id,
-    archivedTag.id,
+  assert.deepEqual(
+    reopened.entities.post.tags.latest(postRevision.document.id),
+    [],
+  )
+  assert.deepEqual(
+    reopened.entities.post.tags
+      .latest(postRevision.document.id, { archived: true })
+      .map(({ id }) => id),
+    [archivedTag.id],
   )
 })
