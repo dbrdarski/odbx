@@ -9,6 +9,7 @@ import {
   Record,
   Tuple,
   UUID,
+  ValidationError,
 } from "../src/index.mjs"
 
 const post = createEntity(({ belongsToMany }) => ({
@@ -26,7 +27,22 @@ const tag = createEntity(({ hasMany }) => ({
   },
 }))
 
-const definitions = { post, tag }
+const profile = createEntity(({ belongsToOne }) => ({
+  relationships: { user: belongsToOne(user) },
+  schema: class Profile {
+    user = UUID(profile.user)
+  },
+}))
+
+const user = createEntity(({ hasOne }) => ({
+  relationships: { profile: hasOne(profile.user) },
+  schema: class User {
+    name = String
+  },
+}))
+
+const definitions = { post, tag, profile, user }
+const missingId = "123e4567-e89b-42d3-a456-426614174000"
 
 const createFixture = async t => {
   const directory = await mkdtemp(join(tmpdir(), "odbx-relationships-"))
@@ -139,4 +155,83 @@ test("relationship reads survive replay", async t => {
       .map(({ id }) => id),
     [archivedTag.id],
   )
+})
+
+test("to-one relationship reads return one revision or null", async t => {
+  const fixture = await createFixture(t)
+  const { entities } = await fixture.create()
+  const userRevision = await entities.user.create(Record({ name: "User" }))
+  const profileRevision = await entities.profile.create(Record({
+    user: userRevision.document.id,
+  }))
+
+  assert.equal(
+    entities.profile.user.latest(profileRevision.document.id),
+    userRevision,
+  )
+  assert.equal(
+    entities.user.profile.latest(userRevision.document.id),
+    profileRevision,
+  )
+  assert.equal(entities.profile.user.latest(missingId), null)
+  assert.equal(entities.user.profile.latest(missingId), null)
+})
+
+test("missing relationship targets reject without persistence", async t => {
+  const fixture = await createFixture(t)
+  const created = await fixture.create()
+
+  await assert.rejects(
+    created.entities.profile.create(Record({ user: missingId })),
+    ValidationError,
+  )
+  assert.deepEqual(created.entities.profile.latest(), [])
+  await created.close()
+
+  const reopened = await fixture.open()
+  assert.deepEqual(reopened.entities.profile.latest(), [])
+})
+
+test("hasOne rejects a second source document", async t => {
+  const fixture = await createFixture(t)
+  const { entities } = await fixture.create()
+  const userRevision = await entities.user.create(Record({ name: "User" }))
+  const data = Record({ user: userRevision.document.id })
+  const profileRevision = await entities.profile.create(data)
+
+  await assert.rejects(entities.profile.create(data), ValidationError)
+  assert.deepEqual(entities.profile.latest(), [profileRevision])
+})
+
+test("an archived source retains its hasOne slot", async t => {
+  const fixture = await createFixture(t)
+  const { entities } = await fixture.create()
+  const userRevision = await entities.user.create(Record({ name: "User" }))
+  const data = Record({ user: userRevision.document.id })
+  const profileRevision = await entities.profile.create(data)
+  const archivedProfile = await entities.profile.archive(profileRevision.document.id)
+
+  await assert.rejects(entities.profile.create(data), ValidationError)
+  assert.equal(entities.user.profile.latest(userRevision.document.id), null)
+  assert.equal(
+    entities.user.profile.latest(userRevision.document.id, { archived: true }),
+    archivedProfile,
+  )
+})
+
+test("replay preserves hasOne uniqueness", async t => {
+  const fixture = await createFixture(t)
+  const created = await fixture.create()
+  const userRevision = await created.entities.user.create(Record({ name: "User" }))
+  const data = Record({ user: userRevision.document.id })
+  const profileRevision = await created.entities.profile.create(data)
+  await created.close()
+
+  const reopened = await fixture.open()
+
+  assert.equal(
+    reopened.entities.user.profile.latest(userRevision.document.id).id,
+    profileRevision.id,
+  )
+  await assert.rejects(reopened.entities.profile.create(data), ValidationError)
 })
