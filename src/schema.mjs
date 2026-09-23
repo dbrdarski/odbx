@@ -38,13 +38,13 @@ const validationError = (code, run, details) =>
 
 const typeMismatch = (run, expected, received) =>
   validationError("type", run, {
-    expected: expected.name,
+    expected: expected?.name,
     received: describe(received),
   })
 
 const missing = (run, expected) =>
   validationError("missing", run, {
-    expected: expected.name,
+    expected: expected?.name,
   })
 
 const unexpected = (run, received) =>
@@ -72,55 +72,61 @@ const resolvedValidators = new Map([
 ])
 
 const tupleName = validators =>
-  `[${Array.from(validators, validator => validator.name).join(", ")}]`
+  `[${Array.from(validators, validator => validator?.name).join(", ")}]`
 
-const createTupleValidator = validator => named(
-  tupleName(validator),
-  (value, run) => {
-    if (!(value instanceof Tuple))
-      return typeMismatch(run, Tuple, value)
+const createTupleValidator = validator => {
+  validator = Tuple(...Array.from(validator, Schema))
 
-    return (validator.length > value.length ? validator : value)
-      .reduce((valid, _, index) => {
+  return named(
+    tupleName(validator),
+    (value, run) => {
+      if (!(value instanceof Tuple))
+        return typeMismatch(run, Tuple, value)
+
+      return (validator.length > value.length ? validator : value)
+        .reduce((valid, _, index) => {
+          const branch = run.branch(index)
+
+          if (index >= validator.length)
+            return branch.collect(
+              unexpected(branch, value[index])
+            )
+
+          if (index >= value.length)
+            return branch.collect(
+              missing(branch, validator[index])
+            )
+
+          return branch.collect(
+            validator[index](value[index], branch)
+          ) && valid
+        }, true)
+    }
+  )
+}
+
+Tuple.of = validator => {
+  validator = Schema(validator)
+
+  return named(
+    `${validator?.name}[]`,
+    (value, run) => {
+      if (!(value instanceof Tuple))
+        return typeMismatch(run, Tuple, value)
+
+      return value.reduce((valid, item, index) => {
         const branch = run.branch(index)
 
-        if (index >= validator.length)
-          return branch.collect(
-            unexpected(branch, value[index])
-          )
-
-        if (index >= value.length)
-          return branch.collect(
-            missing(branch, validator[index])
-          )
-
         return branch.collect(
-          Schema(validator[index])(value[index], branch)
+          validator(item, branch)
         ) && valid
       }, true)
-  }
-)
-
-Tuple.of = validator => named(
-  `${validator.name}[]`,
-  (value, run) => {
-    if (!(value instanceof Tuple))
-      return typeMismatch(run, Tuple, value)
-
-    return value.reduce((valid, item, index) => {
-      const branch = run.branch(index)
-
-      return branch.collect(
-        Schema(validator)(item, branch)
-      ) && valid
-    }, true)
-  }
-)
+    }
+  )
+}
 
 const createClassValidator = validator => {
-  const definition = Record(new validator())
-
-  return named(validator.name, (value, run) => {
+  const validate = named(validator?.name, (value, run) => {
     if (!(value instanceof Record))
       return typeMismatch(run, Record, value)
 
@@ -141,10 +147,20 @@ const createClassValidator = validator => {
         )
 
       return branch.collect(
-        Schema(definition[key])(value[key], branch)
+        definition[key](value[key], branch)
       ) && valid
     }, true)
   })
+
+  resolvedValidators.set(validator, validate)
+
+  const shape = Record(new validator())
+  const definition = Record.from(
+    Record.keys(shape),
+    Array.from(Record.values(shape), Schema)
+  )
+
+  return validate
 }
 
 const resolveValidator = validator => {
@@ -215,13 +231,13 @@ const validateRelationships = run =>
         invalidRelationship({ path }, relationship, id)
       ), false), true)
 
-const validateAlternative = (schema, value, run) => {
+const validateAlternative = (validator, value, run) => {
   const alternative = createValidationRun(
     run.validateReference,
     run.path
   )
   const result = alternative.collect(
-    Schema(schema)(value, alternative)
+    validator(value, alternative)
   )
   const valid = validateRelationships(alternative) && result
 
@@ -233,12 +249,12 @@ const validateAlternative = (schema, value, run) => {
   return valid
 }
 
-const validatorName = validator =>
-  validator?.name || Schema(validator).name
-
 export const Union = (left, right) => {
+  left = Schema(left)
+  right = Schema(right)
+
   const validator = named(
-    `${validatorName(left)} | ${validatorName(right)}`,
+    `${left?.name} | ${right?.name}`,
     (value, run) =>
       validateAlternative(left, value, run) ||
       validateAlternative(right, value, run) ||
