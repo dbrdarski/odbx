@@ -71,6 +71,7 @@ Object.freeze({
   kind: "belongsToMany",
   source: post,
   target: tag,
+  inverse: false,
 })
 ```
 
@@ -86,18 +87,24 @@ Two relationships targeting the same entity remain distinct:
 post.author !== post.editor
 ```
 
-Inverse definitions are separate relationship objects:
+Inverse definitions are separate frozen relationship objects. An inverse helper
+receives the owning relationship and stores it as its target:
 
 ```javascript
-tag.post
+Object.freeze({
+  kind: "hasMany",
+  source: tag,
+  target: post.tag,
+  inverse: true,
+})
 ```
 
-The linker privately records that `tag.post` is the inverse of `post.tag`.
-This private link is necessary because `{ kind, source, target }` alone cannot
-distinguish multiple relationships between the same entity pair.
+This direct link distinguishes multiple relationships between the same entity
+pair without a separate linker or inverse map.
 
-No public `direction` or `cardinality` fields are needed. The helper kind
-already conveys both.
+No separate `direction` or `cardinality` fields are needed. The helper kind
+conveys cardinality, and `inverse` identifies which direction the descriptor
+represents.
 
 ## Database initialization
 
@@ -111,24 +118,25 @@ const db = await DB.open("content.odbx", definitions)
 
 Initialization occurs in this order:
 
-1. Register every exported entity definition and its export name.
+1. Create the value stores and collect every exported entity definition with
+   its export name.
 2. Resolve all lazy entity factories.
-3. Install relationship properties such as `post.tag`.
-4. Link inverse relationships such as `tag.post -> post.tag`.
-5. Compile every schema.
-6. Create database-local entity state and relationship indexes.
-7. Replay the persisted revisions.
+3. Register each document type, compile its schema, and create its histories,
+   revision lookup, and relationship snapshots.
+4. Replay, validate, and publish every complete persisted Revision.
+5. Truncate any incomplete tail after the last complete Revision.
+6. Create the writer and the database-bound entity and relationship facades.
 
-This makes schemas and relationships available before replay begins.
+This makes schemas and relationship definitions available before replay begins.
 
-The current runtime API is removed:
+There is no runtime entity-definition API:
 
 ```javascript
 db.createEntity("post")
 ```
 
-Database initialization instead creates the runtime entity facades. They will
-be destructured from a namespaced property to avoid collisions with database
+Database initialization creates the runtime entity facades. They are
+destructured from a namespaced property to avoid collisions with database
 methods:
 
 ```javascript
@@ -165,8 +173,8 @@ db.entities.post.tag
 ```
 
 The bound API retains the stable relationship definition privately and reads
-the current database's relationship index. Each database keeps its own index
-state keyed by the stable definition.
+the current database's histories and relationship snapshots. Each database
+keeps this state independently.
 
 ## Schema compilation
 
@@ -202,14 +210,10 @@ The rules are:
 - `UUID(post.tag)` validates and captures a relationship reference.
 - Plain JavaScript objects and arrays are not schema shapes.
 
-Recursive classes require placeholder caching:
-
-1. Create and cache an unfinished validator for the class.
-2. Instantiate and inspect the schema class.
-3. Compile its fields.
-4. Complete the cached validator.
-
-This allows:
+Resolved validators live in a process-wide `Map` keyed by the original schema.
+A class validator normalizes one instance to a Record definition, while child
+schemas are resolved only when validation reaches them. Once the outer class
+validator is in the Map, a recursive child resolves back to it. This allows:
 
 ```javascript
 class Vdom {
@@ -217,10 +221,10 @@ class Vdom {
 }
 ```
 
-### Required `Tuple.of` correction
+### `Tuple.of`
 
-The currently inherited `Array.of` implementation returns an ordinary Tuple.
-It does not preserve enough information for the compiler to distinguish:
+`Tuple.of` is a schema-validator factory with its own identity. It lets schema
+resolution distinguish:
 
 ```javascript
 Tuple(Number)
@@ -232,16 +236,17 @@ from:
 Tuple.of(Number)
 ```
 
-Therefore the agreed `Tuple.of(...)` schema surface needs a distinct internal
-schema descriptor. This is necessary for the selected syntax.
+`Tuple(Number)` is an Oddo Tuple used as a fixed positional schema.
+`Tuple.of(Number)` returns a named validator for any-length Tuples of Numbers.
 
 ## Validation
 
-A compiled validator has this interface:
+A compiled validator has the internal interface `(value, run)`. The public
+validation wrapper has this interface:
 
 ```javascript
 const [validationResult, relationsMap] =
-  validate(value, validationRun)
+  validate(schema, value, validateReference)
 ```
 
 `validationResult` is:
@@ -263,7 +268,7 @@ A `ValidationRun` owns:
 - the current path;
 - the collected validation failures;
 - the transient relationship captures;
-- access to the current database state.
+- the optional reference-validation callback.
 
 Nested validators use:
 
@@ -284,8 +289,9 @@ If a Record or Tuple cannot be iterated because the value itself has the wrong
 type, that validator returns its own issue. If it can iterate, it collects the
 specific child issues without also adding a generic parent failure. Record
 iteration reports missing and unexpected properties; Tuple iteration reports
-its own length and item failures. A direct issue at the root is collected by
-the top-level validation wrapper because it has no parent container.
+missing or unexpected positions and item failures. A direct issue at the root
+is collected by the top-level validation wrapper because it has no parent
+container.
 
 Union alternatives validate in isolation. Failed alternatives cannot leak
 errors or relationship captures into the accepted alternative. If either
@@ -326,16 +332,18 @@ returns the `ValidationError` containing all collected issues.
 
 ## Relationship validation
 
-`UUID(post.tag)` can occur anywhere in the Record/Tuple tree. Every occurrence
-contributes to the same Set under `post.tag`.
+`UUID(post.tag)` can occur anywhere in the Record/Tuple tree. It first requires
+a UUID-v4 string, then contributes the ID to the same Set under `post.tag`, and
+finally calls the reference validator when one was supplied.
 
 The cardinality rules are:
 
 - `belongsToMany` accepts any number of distinct target IDs.
 - `belongsToOne` accepts repeated occurrences of the same ID, but fails if the
   completed document captures more than one distinct ID.
-- `hasOne` checks that its target is not already related to another active
-  source document.
+- `hasOne` checks that its target is not already related to another source
+  document, including an archived source. Updating the same source document is
+  allowed.
 - `hasMany` imposes no inverse uniqueness constraint.
 
 Archived target documents remain valid relationship references. `UUID()`
@@ -354,24 +362,26 @@ The complete operation runs inside the existing write queue:
 2. Validate the proposed Record.
 3. Check relationship cardinality and inverse constraints.
 4. Reject without writing if validation fails.
-5. Create and persist the revision.
-6. Publish the revision to the entity state.
-7. Publish its relationship snapshot to the relationship indexes.
+5. Serialize and persist the Revision.
+6. Publish the Revision, its history entry, and its captured relations map.
 
-All conditions that may reject are checked before persistence.
+All validation and relationship conditions are checked before persistence.
 
-If persistence fails, both the revision and transient relationship capture are
-discarded.
+If persistence fails, the value-store transaction is restored and neither the
+Revision nor its relationship snapshot is published. The logical write
+position remains unchanged, so a retry writes from that position. Opening the
+database truncates any incomplete physical tail after the last complete
+Revision.
 
 ## Replay
 
 Replay uses the same compiled validators and relationship publication logic:
 
-1. Reconstruct a persisted revision.
+1. Reconstruct a persisted Revision.
 2. Select its entity definition using `revision.document.type`.
 3. Validate its data.
 4. Capture its relationships.
-5. Publish the revision and relationship state.
+5. Publish the Revision and relationship state.
 
 An unknown document type or invalid persisted document causes `DB.open()` to
 reject.
@@ -379,29 +389,24 @@ reject.
 No schema or relationship definitions are serialized. The persistent ODBX
 format does not need to change.
 
-## Relationship indexes
+## Relationship snapshots
 
-Each owning relationship has one database-local edge state:
+Each entity keeps the latest captured relationships for each of its source
+documents:
 
 ```javascript
-{
-  forward: Map<sourceDocumentId, Set<targetDocumentId>>,
-  inverse: Map<targetDocumentId, Set<sourceDocumentId>>,
-}
+Map([
+  [sourceDocumentId, Map([
+    [owningRelationship, new Set([targetDocumentId])],
+  ])],
+])
 ```
 
-The inverse relationship uses this same state with the direction reversed. It
-does not maintain another independent index.
-
-Publishing a new revision replaces that source document's previous
-relationship snapshot:
-
-1. Remove previous forward targets.
-2. Remove the matching inverse entries.
-3. Install the new forward targets.
-4. Install the matching inverse entries.
-
-Simply adding new targets would leave stale relationships.
+Publishing a successful Revision replaces that source document's entire
+snapshot with `relationshipSnapshots.set(documentId, relationsMap)`. Owning
+reads use the source document's Set directly. Inverse reads scan the owning
+entity's current snapshots in the opposite direction. There are no separate
+forward and inverse indexes.
 
 Archiving a source document does not erase its relationship snapshot. The
 archive revision retains the document data, and therefore retains the same
@@ -417,11 +422,13 @@ Runtime relationships navigate from a source document to the related target
 documents:
 
 ```javascript
-post.tag.latest(postId, { archived: false })
-tag.post.latest(tagId, { archived: null })
+const { post: posts, tag: tags } = db.entities
+
+posts.tag.latest(postId, { archived: false })
+tags.post.latest(tagId, { archived: null })
 ```
 
-`post.tag` traverses from a post to its tags. The inverse `tag.post` traverses
+`posts.tag` traverses from a post to its tags. The inverse `tags.post` traverses
 from a tag to its posts. `latest()` uses the source document's latest
 relationship snapshot and resolves the latest revisions of its targets.
 
@@ -445,27 +452,30 @@ same behavior as entity reads:
 Relationship APIs are read-only. Creating, updating, archiving, and restoring
 documents remain operations on entity APIs.
 
-`relationship.revisions(sourceId)` has an unambiguous future meaning: select
-the currently related target documents, then return all revisions of those
-target documents. It is deferred from the initial API because the same result
-can be composed from `relationship.latest()` and the target entity's
-`revisions()` method.
+`relationship.revisions(sourceId, options)` selects targets using the same
+current membership and archive filter as `latest()`, then returns a flat Array
+containing each selected target document's complete Revision history. It always
+returns an Array, including for to-one relationships. Results follow target
+document insertion order, then Revision order. When no target is selected, it
+returns an empty Array.
 
 Historical relationship membership is a separate future feature. Its API is
 not part of this plan. Deferring it does not require a storage-format migration
 because persisted revisions retain the data from which relationship snapshots
 are derived.
 
-## Implementation sequence
+## Implemented scope
 
-1. Add the schema descriptors: `Union`, `UUID`, and distinguishable
-   `Tuple.of`.
-2. Add lazy `createEntity()` definitions and frozen relationship objects.
-3. Add entity linking, inverse linking, and recursive schema compilation.
-4. Add `ValidationRun`, complete-error collection, and relationship capture.
-5. Change database initialization to accept definitions before replay.
-6. Create runtime entity facades and remove `db.createEntity(name)`.
-7. Validate live writes inside the queue before persistence.
-8. Validate replayed revisions before publication.
-9. Add forward/inverse relationship publication and replacement.
-10. Add database-bound relationship `latest()` reads.
+The completed implementation includes:
+
+1. Lazy entity definitions and frozen owning/inverse relationship descriptors.
+2. Primitive, Record, fixed Tuple, `Tuple.of`, binary Union, and UUID
+   validators with recursive class support.
+3. Complete validation issue collection and transient relationship capture.
+4. Database initialization from entity definitions before replay.
+5. Database-bound entity facades under `db.entities`.
+6. Validation of both live and replayed Revisions before publication.
+7. Replacement of each source document's current relationship snapshot after
+   successful persistence.
+8. Forward and inverse `latest()` and `revisions()` relationship reads.
+9. Focused schema, relationship, archive, failure, and replay tests.
