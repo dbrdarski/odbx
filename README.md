@@ -38,6 +38,7 @@ become the stored document types:
 import { createEntity } from "odbx";
 
 export const post = createEntity(() => ({
+  relationships: {},
   schema: class Post {
     title = String;
   },
@@ -104,6 +105,92 @@ posts.latest({ archived: null });   // all latest post Revisions
 These collection calls return the latest Revision for each matching document.
 An exact `{ id }` lookup returns that document's latest Revision regardless of
 its archive state.
+
+## Relationships
+
+Define relationships alongside each entity's schema. `belongsToOne` and
+`belongsToMany` receive the target entity. `hasOne` and `hasMany` define the
+inverse side by receiving the owning relationship.
+
+```js
+// entities.mjs
+import { createEntity, Tuple, UUID } from "odbx";
+
+export const post = createEntity(({ belongsToMany }) => ({
+  relationships: {
+    tags: belongsToMany(tag),
+  },
+  schema: class Post {
+    title = String;
+    tags = Tuple.of(UUID(post.tags));
+  },
+}));
+
+export const tag = createEntity(({ hasMany }) => ({
+  relationships: {
+    posts: hasMany(post.tags),
+  },
+  schema: class Tag {
+    name = String;
+  },
+}));
+```
+
+Entity definitions are lazy, so `post` can refer to `tag` before `tag` is
+declared. `UUID(post.tags)` accepts the ID of an existing tag document and
+captures the relationship. A relationship UUID may appear anywhere inside a
+Record or Tuple schema.
+
+The four relationship helpers express these cardinalities:
+
+- `belongsToOne(entity)` allows one distinct target.
+- `belongsToMany(entity)` allows any number of targets.
+- `hasOne(relationship)` exposes one source through the inverse side.
+- `hasMany(relationship)` exposes multiple sources through the inverse side.
+
+With the definitions above, create a tag and store its Document ID in a post:
+
+```js
+const tags = db.entities.tag;
+const posts = db.entities.post;
+
+const databaseTag = await tags.create(Record({ name: "database" }));
+const article = await posts.create(Record({
+  title: "Introducing odbx",
+  tags: Tuple(databaseTag.document.id),
+}));
+```
+
+Read the relationship from either direction:
+
+```js
+posts.tags.latest(article.document.id);       // latest tag Revisions
+tags.posts.latest(databaseTag.document.id);   // latest post Revisions
+
+posts.tags.revisions(article.document.id);    // complete histories of the
+                                              // currently related tags
+```
+
+To-one relationships return one Revision or `null`. To-many relationships
+return an Array. A missing source has the corresponding empty result.
+
+Relationship reads filter the returned target documents by their current
+archive state:
+
+```js
+posts.tags.latest(article.document.id);                    // active targets
+posts.tags.latest(article.document.id, { archived: true }); // archived targets
+posts.tags.latest(article.document.id, { archived: null }); // all targets
+```
+
+Archiving a document preserves its relationships. Archived documents remain
+valid relationship targets, and an archived source continues to occupy a
+`hasOne` relationship.
+
+Creating or updating a document rejects with `ValidationError` when a UUID is
+invalid, its target does not exist, or the relationship's cardinality is
+violated. `error.errors` contains every validation issue with its path in the
+document.
 
 ## Reopening and closing
 
