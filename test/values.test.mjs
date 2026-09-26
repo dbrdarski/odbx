@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setImmediate } from "node:timers/promises";
-import { Record, Tuple } from "odbx";
+import { Record, Tuple } from "odbx/helpers";
 import { Record as InternalRecord, Tuple as InternalTuple } from "../src/values.mjs";
 
 test("package exports and internal consumers share the same canonical runtime", () => {

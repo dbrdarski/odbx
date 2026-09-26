@@ -17,7 +17,7 @@ Document bodies must be Oddo `Record` values. Records may contain strings,
 numbers, booleans, `null`, other Records, and ordered `Tuple` values.
 
 ```js
-import { Record, Tuple } from "odbx";
+import { Record, Tuple } from "odbx/helpers";
 
 const article = Record({
   title: "Introducing odbx",
@@ -48,7 +48,8 @@ export const post = createEntity(() => ({
 Pass the module when creating or opening the database:
 
 ```js
-import { DB, Record } from "odbx";
+import { DB } from "odbx";
+import { Record } from "odbx/helpers";
 import * as definitions from "./entities.mjs";
 
 const db = await DB.create("./content.odbx", definitions);
@@ -114,7 +115,8 @@ inverse side by receiving the owning relationship.
 
 ```js
 // entities.mjs
-import { createEntity, Tuple, UUID } from "odbx";
+import { createEntity, UUID } from "odbx";
+import { Tuple } from "odbx/helpers";
 
 export const post = createEntity(({ belongsToMany }) => ({
   relationships: {

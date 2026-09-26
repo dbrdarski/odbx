@@ -3,7 +3,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createEntity, DB, Record } from "../src/index.mjs";
+import { Record } from "../src/helpers.mjs";
+import { createEntity, DB } from "../src/index.mjs";
 import { parse } from "../src/parser.mjs";
 
 const definitions = {

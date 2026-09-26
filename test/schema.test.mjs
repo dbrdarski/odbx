@@ -1,10 +1,9 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { Record, Tuple } from "../src/helpers.mjs"
 import {
   createEntity,
-  Record,
   Schema,
-  Tuple,
   UUID,
   Union,
   validate,

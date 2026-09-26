@@ -6,7 +6,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.mjs",
-    "./browser": "./src/browser.mjs"
+    "./helpers": "./src/helpers.mjs"
   },
   "scripts": {
     "test": "node --test"

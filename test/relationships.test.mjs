@@ -3,11 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
+import { Record, Tuple } from "../src/helpers.mjs"
 import {
   createEntity,
   DB,
-  Record,
-  Tuple,
   UUID,
   ValidationError,
 } from "../src/index.mjs"

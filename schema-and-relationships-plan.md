@@ -7,10 +7,10 @@ Entity definitions live in a normal JavaScript module:
 ```javascript
 import {
   createEntity,
-  Tuple,
   Union,
   UUID,
 } from "odbx"
+import { Tuple } from "odbx/helpers"
 
 class TitleAndSlug {
   title = String
