@@ -249,6 +249,11 @@ const validateAlternative = (validator, value, run) => {
   return valid
 }
 
+export const Equals = expected => named(
+  `Equals(${JSON.stringify(expected)})`,
+  withError(typeMismatch, value => value === expected)
+)
+
 export const Union = (left, right) => {
   left = Schema(left)
   right = Schema(right)
