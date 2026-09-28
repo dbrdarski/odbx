@@ -391,21 +391,20 @@ format does not need to change.
 
 ## Relationship snapshots
 
-Each entity keeps the latest captured relationships for each of its source
-documents:
+Each entity keeps its latest captured relationships indexed by relationship:
 
 ```javascript
 Map([
-  [sourceDocumentId, Map([
-    [owningRelationship, new Set([targetDocumentId])],
+  [owningRelationship, Map([
+    [sourceDocumentId, new Set([targetDocumentId])],
   ])],
 ])
 ```
 
-Publishing a successful Revision replaces that source document's entire
-snapshot with `relationshipSnapshots.set(documentId, relationsMap)`. Owning
-reads use the source document's Set directly. Inverse reads scan the owning
-entity's current snapshots in the opposite direction. There are no separate
+Publishing a successful Revision removes that source document from its old
+relationship snapshots, then adds its current Sets. Owning reads find the
+relationship first and then the source document. Inverse reads still inspect
+the owning relationship in the opposite direction. There are no separate
 forward and inverse indexes.
 
 Archiving a source document does not erase its relationship snapshot. The

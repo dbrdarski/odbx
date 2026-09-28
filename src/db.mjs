@@ -11,7 +11,12 @@ const publishRevision =
       history.push(revision);
       histories.set(revision.document.id, history);
       revisions.set(revision.id, revision);
-      relationshipSnapshots.set(revision.document.id, relationsMap);
+      relationshipSnapshots.forEach(snapshots => snapshots.delete(revision.document.id));
+      relationsMap.forEach((ids, relationship) => {
+        const snapshots = relationshipSnapshots.get(relationship) ?? new Map();
+        snapshots.set(revision.document.id, ids);
+        relationshipSnapshots.set(relationship, snapshots);
+      });
       return revision;
     };
 
@@ -50,10 +55,10 @@ const createDatabase = async (file, bytes, definitions) => {
     if (!target?.histories.has(id)) return false;
     if (!hasOne(relationship)) return true;
     const source = statesByEntity.get(relationship.source);
-    return Array.from(source.relationshipSnapshots).every(
-      ([documentId, relationships]) =>
+    return Array.from(source.relationshipSnapshots.get(relationship) ?? []).every(
+      ([documentId, ids]) =>
         documentId === revision.document.id ||
-        !relationships.get(relationship)?.has(id),
+        !ids.has(id),
     );
   };
   const validateRevision = (validator, revision) =>
@@ -64,9 +69,9 @@ const createDatabase = async (file, bytes, definitions) => {
     const target = statesByEntity.get(relationship.inverse ? owning.source : owning.target);
     const related = relationship.inverse
       ? (sourceId, targetId) =>
-        source.relationshipSnapshots.get(targetId)?.get(owning)?.has(sourceId)
+        source.relationshipSnapshots.get(owning)?.get(targetId)?.has(sourceId)
       : (sourceId, targetId) =>
-        source.relationshipSnapshots.get(sourceId)?.get(owning)?.has(targetId);
+        source.relationshipSnapshots.get(owning)?.get(sourceId)?.has(targetId);
     const single = relationship.kind === "belongsToOne" || relationship.kind === "hasOne";
     const relationshipLatest = (sourceId, options) => {
       const revisions = Array.from(target.histories)
