@@ -4,7 +4,7 @@ const boundary = bytes => {
   const replayed = { endOffset: 0 };
   try {
     for (const token of parse(bytes)) {
-      if (token.type === "revision") replayed.endOffset = token.endOffset;
+      if (token.type === "revision" || token.type === "fork") replayed.endOffset = token.endOffset;
     }
   } catch (error) {
     if (!(error instanceof ParseError)) throw error;

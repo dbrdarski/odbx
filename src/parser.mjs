@@ -216,6 +216,17 @@ class Scanner {
         entry = { type: "revision", document, metadata, data, archived };
         break;
       }
+      case "@": {
+        this.#offset++;
+        const start = this.#offset;
+        if (!this.eof && /[a-z_]/.test(this.#peek())) {
+          this.#offset++;
+          while (!this.eof && /[a-z0-9_]/.test(this.#peek())) this.#offset++;
+        }
+        entry = { type: "fork", name: start === this.#offset
+          ? null : this.#bytes.toString("ascii", start, this.#offset) };
+        break;
+      }
       case "T":
       case "F":
       case "V":
@@ -224,6 +235,7 @@ class Scanner {
       default:
         this.#fail("Expected store definition or primitive");
     }
-    return entry.type === "revision" ? { ...entry, endOffset: this.#offset } : entry;
+    return entry.type === "revision" || entry.type === "fork"
+      ? { ...entry, endOffset: this.#offset } : entry;
   }
 }
