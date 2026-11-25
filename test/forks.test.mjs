@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -96,6 +96,43 @@ test("created forks persist independent states", async () => {
         expected[index]);
       await reopened.close();
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a registered fork name cannot be reused when its file is missing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "odbx-forks-"));
+  const rootPath = join(directory, "knowledge.odbx");
+  try {
+    const root = await DB.create(rootPath, definitions);
+    const child = await root.fork("draft");
+    await child.close();
+    await rename(join(directory, "knowledge.draft.odbx"), join(directory, "moved.odbx"));
+    await assert.rejects(root.fork("draft"), /Fork already exists/);
+    await root.close();
+
+    const reopened = await DB.open(rootPath, definitions);
+    await assert.rejects(reopened.fork("draft"), /Fork already exists/);
+    await reopened.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a fork of an extensionless root can be reopened", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "odbx-forks-"));
+  const rootPath = join(directory, "knowledge");
+  try {
+    const root = await DB.create(rootPath, definitions);
+    const child = await root.fork("draft");
+    const revision = await child.entities.post.create(Record({ title: "Draft" }));
+    await child.close();
+    await root.close();
+
+    const reopened = await DB.open(rootPath, definitions, ["draft"]);
+    assert.equal(reopened.entities.post.latest({ id: revision.document.id }).id, revision.id);
+    await reopened.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

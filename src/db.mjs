@@ -18,8 +18,6 @@ const forkFilename = (rootPath, identifiers) => identifiers.length
 const readForkPath = async (rootPath, forkPath) => {
   if (!Array.isArray(forkPath) || !forkPath.every(validForkIdentifier))
     throw new TypeError("Invalid fork path");
-  if (forkPath.length && !rootPath.endsWith(".odbx"))
-    throw new TypeError("Fork root filename must end in .odbx");
   const path = [...forkPath];
   return {
     path,
@@ -194,6 +192,7 @@ const createDatabase = async (file, bytes, definitions, parent, {
     }),
     fork: name => write.fork(async append => {
       if (name != null && !validForkName(name)) throw new TypeError("Invalid fork name");
+      if (name != null && forks.children.has(name)) throw Error(`Fork already exists: ${name}`);
       const childForkPath = [...forkPath, name ?? forks.nextIndex];
       const childPath = forkFilename(rootPath, childForkPath);
       const childFile = await open(childPath, "wx+");
