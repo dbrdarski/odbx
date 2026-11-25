@@ -19,5 +19,7 @@ export async function commit(stores, persist, discover) {
 
 export function createCommit(stores, persist) {
   const enqueue = createQueue();
-  return discover => enqueue(() => commit(stores, persist, discover));
+  const queuedCommit = discover => enqueue(() => commit(stores, persist, discover));
+  queuedCommit.enqueue = enqueue;
+  return queuedCommit;
 }

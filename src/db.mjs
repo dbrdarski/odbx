@@ -1,4 +1,4 @@
-import { open, readFile } from "node:fs/promises";
+import { open, readFile, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { replay } from "./replay.mjs";
 import { Schema, validate } from "./schema.mjs";
@@ -9,6 +9,7 @@ import { createWriter } from "./writer.mjs";
 const validForkIdentifier = identifier => typeof identifier === "string"
   ? /^[a-z_][a-z0-9_]*$/.test(identifier)
   : Number.isSafeInteger(identifier) && identifier >= 0;
+const validForkName = name => typeof name === "string" && validForkIdentifier(name);
 
 const forkFilename = (rootPath, identifiers) => identifiers.length
   ? [rootPath.replace(/\.odbx$/, ""), ...identifiers, "odbx"].join(".")
@@ -183,6 +184,23 @@ const createDatabase = async (file, bytes, definitions, parent, {
 
   return {
     entities,
+    fork: name => write.fork(async append => {
+      if (name != null && !validForkName(name)) throw new TypeError("Invalid fork name");
+      const childForkPath = [...forkPath, name ?? forks.nextIndex];
+      const childPath = forkFilename(rootPath, childForkPath);
+      const childFile = await open(childPath, "wx+");
+      try {
+        const child = await createDatabase(childFile, null, definitions,
+          { stores, entityStates }, { rootPath, forkPath: childForkPath });
+        await append(name == null ? "@" : `@${name}`);
+        registerFork({ name: name ?? null });
+        return child;
+      } catch (error) {
+        await childFile.close();
+        await unlink(childPath);
+        throw error;
+      }
+    }),
     openFork: (...descendants) => forks.children.has(descendants[0])
       ? DB.open(rootPath, definitions, [...forkPath, ...descendants])
       : Promise.reject(Error(`Unknown fork: ${descendants[0]}`)),

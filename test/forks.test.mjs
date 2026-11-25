@@ -61,3 +61,42 @@ test("fork paths replay only the selected state", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("created forks persist independent states", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "odbx-forks-"));
+  const rootPath = join(directory, "knowledge.odbx");
+  try {
+    const root = await DB.create(rootPath, definitions);
+    const pending = root.entities.post.create(Record({ title: "First" }));
+    const zero = await root.fork();
+    const first = await pending;
+    assert.equal(zero.entities.post.latest({ id: first.document.id }).id, first.id);
+    const named = await root.fork("draft");
+    const one = await root.fork();
+    const nested = await named.fork();
+
+    const rootRevision = await root.entities.post.update(first.document.id,
+      Record({ title: "Root" }), { from: first.id });
+    const namedRevision = await named.entities.post.update(first.document.id,
+      Record({ title: "Named" }), { from: first.id });
+    const nestedRevision = await nested.entities.post.update(first.document.id,
+      Record({ title: "Nested" }), { from: first.id });
+    await nested.close();
+    await named.close();
+    await zero.close();
+    await one.close();
+    await root.close();
+
+    const paths = [[], [0], [1], ["draft"], ["draft", 0]];
+    const expected = [rootRevision.id, first.id, first.id,
+      namedRevision.id, nestedRevision.id];
+    for (const [index, path] of paths.entries()) {
+      const reopened = await DB.open(rootPath, definitions, path);
+      assert.equal(reopened.entities.post.latest({ id: first.document.id }).id,
+        expected[index]);
+      await reopened.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
