@@ -100,3 +100,28 @@ test("created forks persist independent states", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("close waits for accepted writes and forks", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "odbx-forks-"));
+  const rootPath = join(directory, "knowledge.odbx");
+  try {
+    const root = await DB.create(rootPath, definitions);
+    const pending = root.entities.post.create(Record({ title: "Before close" }));
+    const pendingFork = root.fork();
+    const closing = root.close();
+    const rejectedWrite = assert.rejects(root.entities.post.create(Record({ title: "After close" })));
+    const rejectedFork = assert.rejects(root.fork());
+
+    const [first, child] = await Promise.all([pending, pendingFork]);
+    await closing;
+    await Promise.all([rejectedWrite, rejectedFork]);
+    assert.equal(child.entities.post.latest({ id: first.document.id }).id, first.id);
+    await child.close();
+
+    const reopened = await DB.open(rootPath, definitions, [0]);
+    assert.equal(reopened.entities.post.latest({ id: first.document.id }).id, first.id);
+    await reopened.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

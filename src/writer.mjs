@@ -14,5 +14,6 @@ export function createWriter(stores, file, position = 0) {
     return [revision, relationsMap];
   });
   write.fork = task => commit.enqueue(() => task(append));
+  write.close = () => commit.enqueue(() => file.close());
   return write;
 }

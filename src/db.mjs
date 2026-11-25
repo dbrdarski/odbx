@@ -204,7 +204,7 @@ const createDatabase = async (file, bytes, definitions, parent, {
     openFork: (...descendants) => forks.children.has(descendants[0])
       ? DB.open(rootPath, definitions, [...forkPath, ...descendants])
       : Promise.reject(Error(`Unknown fork: ${descendants[0]}`)),
-    close: () => file.close(),
+    close: write.close,
   };
 };
 
