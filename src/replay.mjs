@@ -12,8 +12,26 @@ const boundary = bytes => {
   return replayed.endOffset;
 };
 
-export const replay = (stores, bytes, publish) => {
+function* throughFork({ bytes, identifier }) {
+  let numbered = 0;
+  for (const token of parse(bytes)) {
+    yield token;
+    if (token.type !== "fork") continue;
+    const child = token.name === null ? numbered++ : token.name;
+    if (child === identifier) return;
+  }
+  throw Error(`Unknown fork: ${identifier}`);
+}
+
+export const replay = (stores, bytes, publish, steps = [], onFork = () => {}) => {
   const endOffset = boundary(bytes);
-  stores.matchTokens(parse(bytes.subarray(0, endOffset)), publish);
+  function* tokens() {
+    for (const step of steps) yield* throughFork(step);
+    for (const token of parse(bytes.subarray(0, endOffset))) {
+      if (token.type === "fork") onFork(token);
+      yield token;
+    }
+  }
+  stores.matchTokens(tokens(), publish);
   return endOffset;
 };

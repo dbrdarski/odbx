@@ -1,9 +1,34 @@
-import { open } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { replay } from "./replay.mjs";
 import { Schema, validate } from "./schema.mjs";
 import { createStores } from "./stores.mjs";
 import { deepClone } from "./utils.mjs";
 import { createWriter } from "./writer.mjs";
+
+const validForkIdentifier = identifier => typeof identifier === "string"
+  ? /^[a-z_][a-z0-9_]*$/.test(identifier)
+  : Number.isSafeInteger(identifier) && identifier >= 0;
+
+const forkFilename = (rootPath, identifiers) => identifiers.length
+  ? [rootPath.replace(/\.odbx$/, ""), ...identifiers, "odbx"].join(".")
+  : rootPath;
+
+const readForkPath = async (rootPath, forkPath) => {
+  if (!Array.isArray(forkPath) || !forkPath.every(validForkIdentifier))
+    throw new TypeError("Invalid fork path");
+  if (forkPath.length && !rootPath.endsWith(".odbx"))
+    throw new TypeError("Fork root filename must end in .odbx");
+  const path = [...forkPath];
+  return {
+    path,
+    targetPath: forkFilename(rootPath, path),
+    steps: await Promise.all(path.map(async (identifier, index) => ({
+      bytes: await readFile(forkFilename(rootPath, path.slice(0, index))),
+      identifier,
+    }))),
+  };
+};
 
 const publishRevision =
   (histories, revisions, relationshipSnapshots) =>
@@ -21,7 +46,9 @@ const publishRevision =
       return revision;
     };
 
-const createDatabase = async (file, bytes, definitions, parent) => {
+const createDatabase = async (file, bytes, definitions, parent, {
+  rootPath, forkPath = [], steps = [],
+} = {}) => {
   const stores = parent?.stores.fork() ?? createStores();
   const definitionEntries = Object.entries(definitions);
   definitionEntries.forEach(([, entity]) => entity());
@@ -100,7 +127,12 @@ const createDatabase = async (file, bytes, definitions, parent) => {
     if (validationResult !== true) throw validationResult;
     return publish([revision, relationsMap]);
   };
-  const endOffset = bytes ? replay(stores, bytes, replayRevision) : 0;
+  const forks = { nextIndex: 0, children: new Map() };
+  const registerFork = ({ name }) => {
+    const identifier = name === null ? forks.nextIndex++ : name;
+    forks.children.set(identifier, forkFilename(rootPath, [...forkPath, identifier]));
+  };
+  const endOffset = bytes ? replay(stores, bytes, replayRevision, steps, registerFork) : 0;
   if (bytes?.length > endOffset) await file.truncate(endOffset);
   const write = createWriter(stores, file, endOffset);
   const createFacade = ({ createDocument, validator, histories, revisions, publish }) => {
@@ -151,18 +183,28 @@ const createDatabase = async (file, bytes, definitions, parent) => {
 
   return {
     entities,
+    openFork: (...descendants) => forks.children.has(descendants[0])
+      ? DB.open(rootPath, definitions, [...forkPath, ...descendants])
+      : Promise.reject(Error(`Unknown fork: ${descendants[0]}`)),
     close: () => file.close(),
   };
 };
 
 export const DB = {
   create: (filename, definitions) => open(filename, "wx+").then(file =>
-    createDatabase(file, null, definitions)
+    createDatabase(file, null, definitions, null, { rootPath: resolve(filename) })
       .catch(error => file.close().then(() => Promise.reject(error))),
   ),
-  open: (filename, definitions) => open(filename, "r+").then(file =>
-    file.readFile()
-      .then(bytes => createDatabase(file, bytes, definitions))
-      .catch(error => file.close().then(() => Promise.reject(error))),
-  ),
+  open: (filename, definitions, forkPath = []) => {
+    const rootPath = resolve(filename);
+    return readForkPath(rootPath, forkPath).then(({ path, targetPath, steps }) =>
+      open(targetPath, "r+").then(file =>
+        file.readFile()
+          .then(bytes => createDatabase(file, bytes, definitions, null, {
+            rootPath, forkPath: path, steps,
+          }))
+          .catch(error => file.close().then(() => Promise.reject(error))),
+      ),
+    );
+  },
 };
