@@ -2,6 +2,7 @@ import { open } from "node:fs/promises";
 import { replay } from "./replay.mjs";
 import { Schema, validate } from "./schema.mjs";
 import { createStores } from "./stores.mjs";
+import { deepClone } from "./utils.mjs";
 import { createWriter } from "./writer.mjs";
 
 const publishRevision =
@@ -20,17 +21,20 @@ const publishRevision =
       return revision;
     };
 
-const createDatabase = async (file, bytes, definitions) => {
-  const stores = createStores();
+const createDatabase = async (file, bytes, definitions, parent) => {
+  const stores = parent?.stores.fork() ?? createStores();
   const definitionEntries = Object.entries(definitions);
   definitionEntries.forEach(([, entity]) => entity());
   const entityStates = Object.create(null);
   const statesByEntity = new Map();
   for (const [type, entity] of definitionEntries) {
     const { createDocument } = stores.addDocumentType(type);
-    const histories = new Map();
-    const revisions = new Map();
-    const relationshipSnapshots = new Map();
+    const { histories, revisions, relationshipSnapshots } =
+      deepClone(parent?.entityStates[type]) ?? {
+        histories: new Map(),
+        revisions: new Map(),
+        relationshipSnapshots: new Map(),
+      };
     const state = entityStates[type] = {
       createDocument,
       validator: Schema(entity().schema),

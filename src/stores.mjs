@@ -15,6 +15,7 @@ const createCounter = (value = 0) => ({
 });
 
 export const createStore = ({ reference, serialize }, counter = createCounter(0), keys = new Map()) => ({
+  fork: definition => createStore(definition, counter.fork(), new Map(keys)),
   transact: () => {
     const prev = counter
     counter = counter.fork()
@@ -32,31 +33,31 @@ export const createStore = ({ reference, serialize }, counter = createCounter(0)
   }
 })
 
-export function createStores() {
+export function createStores(parent) {
   const getKey = (write, value) => {
     if (typeof value === "string") return stringStore.getKey(write, value);
     if (value instanceof Tuple) return tupleStore.getKey(write, value);
     if (value instanceof Record) return recordStore.getKey(write, value);
     return encodePrimitive(value);
   };
-  const stringStore = createStore({
+  const stringStore = (parent?.stringStore.fork ?? createStore)({
     reference: stringReference,
     serialize: (_, value) => encodeString(value)
   });
-  const tupleStore = createStore({
+  const tupleStore = (parent?.tupleStore.fork ?? createStore)({
     reference: tupleReference,
     serialize: (write, value) => `[${Array.from(value, bind(getKey, write)).join("")}]`,
   });
-  const recordStore = createStore({
+  const recordStore = (parent?.recordStore.fork ?? createStore)({
     reference: recordReference,
     serialize: (write, value) => `{${getKey(write, Record.keys(value))}${getKey(write, Record.values(value))}}`,
   });
-  const documentStore = createStore({
+  const documentStore = (parent?.documentStore.fork ?? createStore)({
     reference: documentReference,
     serialize: (write, { id, type }) =>
       `<${stringStore.getKey(write, id)}${stringStore.getKey(write, type)}>`,
   });
-  const revisionStore = createStore({
+  const revisionStore = (parent?.revisionStore.fork ?? createStore)({
     reference: revisionReference,
     serialize: (write, { document, metadata, data, archived }) =>
       `(${documentStore.getKey(write, document)}${getKey(write, metadata)}${getKey(write, data)}${encodePrimitive(archived)})`,
@@ -71,13 +72,13 @@ export function createStores() {
   const createRevision = (document, { data, from = null, archived = false }) => {
     if (!(data instanceof Record)) throw new TypeError("Document data must be a Record");
     const id = randomHash();
-    return {
+    return Record({
       id,
       document,
       metadata: Record({ id, timestamp: Date.now(), archived, from }),
       data,
       archived,
-    };
+    });
   };
 
   const matchTokens = (tokens, publish) => {
@@ -113,18 +114,19 @@ export function createStores() {
       }));
       case "revision": {
         const metadata = matchToken(match)(token.metadata)
-        const revision = {
+        const revision = Record({
           id: metadata.id,
           document: matchToken(match)(token.document),
           metadata,
           data: matchToken(match)(token.data),
           archived: matchToken(match)(token.archived),
-        }
+        })
         revisionStore.getKey(match.revision.write, revision);
         return revision;
       }
     }
   }
-
-  return { stringStore, tupleStore, recordStore, documentStore, revisionStore, addDocumentType, createRevision, getKey, matchTokens };
+  const fork = () => createStores(store);
+  const store = { fork, stringStore, tupleStore, recordStore, documentStore, revisionStore, addDocumentType, createRevision, getKey, matchTokens };
+  return store;
 }
