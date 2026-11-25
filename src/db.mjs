@@ -1,5 +1,5 @@
 import { open, readFile, unlink } from "node:fs/promises";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { replay } from "./replay.mjs";
 import { Schema, validate } from "./schema.mjs";
 import { createStores } from "./stores.mjs";
@@ -129,6 +129,7 @@ const createDatabase = async (file, bytes, definitions, parent, {
     return publish([revision, relationsMap]);
   };
   const forks = { nextIndex: 0, children: new Map() };
+  const path = forkFilename(rootPath, forkPath);
   const registerFork = ({ name }) => {
     const identifier = name === null ? forks.nextIndex++ : name;
     forks.children.set(identifier, forkFilename(rootPath, [...forkPath, identifier]));
@@ -184,6 +185,13 @@ const createDatabase = async (file, bytes, definitions, parent, {
 
   return {
     entities,
+    info: () => ({
+      filename: basename(path),
+      path,
+      rootPath,
+      forkPath: [...forkPath],
+      forks: [...forks.children.keys()],
+    }),
     fork: name => write.fork(async append => {
       if (name != null && !validForkName(name)) throw new TypeError("Invalid fork name");
       const childForkPath = [...forkPath, name ?? forks.nextIndex];
